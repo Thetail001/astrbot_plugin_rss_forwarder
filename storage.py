@@ -30,7 +30,12 @@ class FeedStorage:
         if self._get_kv_data is None:
             raw = self._fallback_store.get(key)
         else:
-            raw = await self._get_kv_data(key)
+            try:
+                # AstrBot PluginKVStoreMixin.get_kv_data(key, default)
+                raw = await self._get_kv_data(key, None)
+            except TypeError:
+                # 兼容仅接收 key 的实现
+                raw = await self._get_kv_data(key)
         if raw in (None, ""):
             return default
         if isinstance(raw, str):
