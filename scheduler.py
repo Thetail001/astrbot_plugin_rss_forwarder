@@ -61,6 +61,10 @@ class RSSScheduler:
     def config(self) -> RSSConfig:
         return self._config
 
+    @property
+    def storage(self) -> FeedStorage:
+        return self._storage
+
     async def start(self) -> None:
         if self.running:
             return
