@@ -54,33 +54,3 @@ class RSSPlugin(Star, RSSCommands):
         async for result in RSSCommands.rss_router(self, event):
             yield result
 
-    @filter.command("rss list")
-    async def _rss_list(self, event: AstrMessageEvent):
-        async for result in RSSCommands.rss_list(self, event):
-            yield result
-
-    @filter.command("rss run")
-    async def _rss_run(self, event: AstrMessageEvent):
-        async for result in RSSCommands.rss_run(self, event):
-            yield result
-
-    @filter.command("rss reset")
-    @filter.regex(r"^/?rss\s+reset\s*$")
-    async def _rss_reset(self, event: AstrMessageEvent):
-        async for result in RSSCommands.rss_reset(self, event):
-            yield result
-
-    @filter.command("rss status")
-    async def _rss_status(self, event: AstrMessageEvent):
-        async for result in RSSCommands.rss_status(self, event):
-            yield result
-
-    @filter.command("rss pause")
-    async def _rss_pause(self, event: AstrMessageEvent):
-        async for result in RSSCommands.rss_pause(self, event):
-            yield result
-
-    @filter.command("rss resume")
-    async def _rss_resume(self, event: AstrMessageEvent):
-        async for result in RSSCommands.rss_resume(self, event):
-            yield result
