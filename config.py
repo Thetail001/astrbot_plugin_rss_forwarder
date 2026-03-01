@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from urllib.parse import urlparse
 
 
@@ -36,6 +36,15 @@ class JobConfig:
 
 
 @dataclass(slots=True)
+class RenderCardTemplateConfig:
+    title: str = "{title}"
+    source: str = "{source}"
+    published_at: str = "{published_at}"
+    summary: str = "{summary}"
+    link_text: str = "查看全文"
+
+
+@dataclass(slots=True)
 class RSSConfig:
     """插件运行配置。"""
 
@@ -46,6 +55,9 @@ class RSSConfig:
     llm_profile: str = "rss_enrich"
     max_input_chars: int = 2000
     timeout: int = 15
+    render_mode: str = "text"
+    summary_max_chars: int = 280
+    render_card_template: RenderCardTemplateConfig = field(default_factory=RenderCardTemplateConfig)
 
     @property
     def poll_interval_seconds(self) -> int:
@@ -101,6 +113,32 @@ class RSSConfig:
             llm_profile=str(runtime_conf.get("llm_profile", "rss_enrich")).strip() or "rss_enrich",
             max_input_chars=int(runtime_conf.get("max_input_chars", 2000)),
             timeout=int(runtime_conf.get("timeout", 15)),
+            render_mode=str(runtime_conf.get("render_mode", "text")).strip() or "text",
+            summary_max_chars=int(runtime_conf.get("summary_max_chars", 280)),
+            render_card_template=RenderCardTemplateConfig(
+                title=str(
+                    (runtime_conf.get("render_card_template", {}) or {}).get("title", "{title}")
+                ).strip()
+                or "{title}",
+                source=str(
+                    (runtime_conf.get("render_card_template", {}) or {}).get("source", "{source}")
+                ).strip()
+                or "{source}",
+                published_at=str(
+                    (runtime_conf.get("render_card_template", {}) or {}).get(
+                        "published_at", "{published_at}"
+                    )
+                ).strip()
+                or "{published_at}",
+                summary=str(
+                    (runtime_conf.get("render_card_template", {}) or {}).get("summary", "{summary}")
+                ).strip()
+                or "{summary}",
+                link_text=str(
+                    (runtime_conf.get("render_card_template", {}) or {}).get("link_text", "查看全文")
+                ).strip()
+                or "查看全文",
+            ),
         )
         config.validate()
         return config
@@ -139,6 +177,10 @@ class RSSConfig:
             raise ConfigValidationError("max_input_chars 必须 > 0")
         if self.timeout <= 0:
             raise ConfigValidationError("timeout 必须 > 0")
+        if self.render_mode not in {"text", "image"}:
+            raise ConfigValidationError("render_mode 必须是 text 或 image")
+        if self.summary_max_chars <= 0:
+            raise ConfigValidationError("summary_max_chars 必须 > 0")
         if self.llm_enabled and not self.llm_profile:
             raise ConfigValidationError("llm_enabled=true 时 llm_profile 不能为空")
 
