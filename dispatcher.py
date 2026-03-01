@@ -119,7 +119,8 @@ class FeedDispatcher:
         link = data["link"]
 
         try:
-            from astrbot.api.message_components import Link, MessageChain, Plain
+            # 某些 AstrBot 版本没有 Link 组件，但通常仍有 MessageChain/Plain。
+            from astrbot.api.message_components import MessageChain, Plain
 
             text_lines = [
                 line
@@ -135,7 +136,12 @@ class FeedDispatcher:
 
             if link:
                 link_label = link_text if data["truncated"] == "1" else link
-                components.append(Link(link_label, link))
+                try:
+                    from astrbot.api.message_components import Link
+
+                    components.append(Link(link_label, link))
+                except Exception:
+                    components.append(Plain(f"\n{link_label}: {link}" if link_label != link else f"\n{link}"))
 
             return MessageChain(components)
         except Exception as exc:  # pragma: no cover - 依赖运行环境
