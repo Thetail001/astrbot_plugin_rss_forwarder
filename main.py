@@ -18,7 +18,7 @@ class RSSPlugin(Star, RSSCommands):
         fetcher = FeedFetcher()
         parser = FeedParser()
         storage = FeedStorage()
-        dispatcher = FeedDispatcher()
+        dispatcher = FeedDispatcher(context=context, config=config)
 
         self.scheduler = RSSScheduler(
             config=config,
