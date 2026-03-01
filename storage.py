@@ -10,6 +10,7 @@ class FeedStorage:
 
     FEED_STATE_PREFIX = "feed_state:"
     CONTENT_KEY_PREFIX = "content_seen:"
+    CONTENT_INDEX_KEY = "content_seen_index"
 
     def __init__(
         self,
@@ -30,7 +31,12 @@ class FeedStorage:
         if self._get_kv_data is None:
             raw = self._fallback_store.get(key)
         else:
-            raw = await self._get_kv_data(key)
+            try:
+                # AstrBot PluginKVStoreMixin.get_kv_data(key, default)
+                raw = await self._get_kv_data(key, None)
+            except TypeError:
+                # 兼容仅接收 key 的实现
+                raw = await self._get_kv_data(key)
         if raw in (None, ""):
             return default
         if isinstance(raw, str):
@@ -79,6 +85,27 @@ class FeedStorage:
                 "updated_at": int(time.time()),
             },
         )
+        seen_index = await self.get(self.CONTENT_INDEX_KEY, default=[])
+        if not isinstance(seen_index, list):
+            seen_index = []
+        if item_id not in seen_index:
+            seen_index.append(item_id)
+            await self.put(self.CONTENT_INDEX_KEY, seen_index)
+
+    async def clear_seen(self) -> int:
+        """清空已推送去重记录，返回删除数量。"""
+        seen_index = await self.get(self.CONTENT_INDEX_KEY, default=[])
+        if not isinstance(seen_index, list):
+            seen_index = []
+
+        deleted = 0
+        for item_id in seen_index:
+            await self.delete(self._content_key(str(item_id)))
+            deleted += 1
+
+        await self.delete(self.CONTENT_INDEX_KEY)
+        self._seen_ids.clear()
+        return deleted
 
     async def get_feed_state(self, feed_id: str) -> dict[str, Any]:
         return await self.get(self._feed_state_key(feed_id), default={})

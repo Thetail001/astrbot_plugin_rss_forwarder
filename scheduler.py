@@ -61,6 +61,10 @@ class RSSScheduler:
     def config(self) -> RSSConfig:
         return self._config
 
+    @property
+    def storage(self) -> FeedStorage:
+        return self._storage
+
     async def start(self) -> None:
         if self.running:
             return
@@ -181,6 +185,9 @@ class RSSScheduler:
             started_perf = time.perf_counter()
             fetched_count = 0
             pushed_count = 0
+            parsed_count = 0
+            skipped_seen_count = 0
+            dispatch_fail_count = 0
             error_summary = ""
 
             try:
@@ -188,16 +195,21 @@ class RSSScheduler:
                 fetched_count = len(raw_items)
 
                 items = self._call_parse(raw_items, job)
+                parsed_count = len(items)
                 for item in items:
                     item_id = self._storage.build_dedup_key(item)
                     if not item_id or await self._storage.has_seen(item_id):
+                        skipped_seen_count += 1
                         continue
 
                     event_item = dict(item)
                     event_item.setdefault("job_id", job.id)
                     if self._pipeline is not None:
                         event_item = await self._pipeline.process(event_item)
-                    await self._dispatcher.dispatch(event_item)
+                    success_count = await self._dispatcher.dispatch(event_item)
+                    if success_count <= 0:
+                        dispatch_fail_count += 1
+                        continue
                     await self._storage.mark_seen(item_id)
                     pushed_count += 1
 
@@ -224,10 +236,13 @@ class RSSScheduler:
                 error_summary=error_summary,
             )
             logger.info(
-                "job=%s finished: fetched=%s pushed=%s duration_ms=%s error=%s",
+                "job=%s finished: fetched=%s parsed=%s pushed=%s skipped_seen=%s dispatch_fail=%s duration_ms=%s error=%s",
                 job.id,
                 fetched_count,
+                parsed_count,
                 pushed_count,
+                skipped_seen_count,
+                dispatch_fail_count,
                 duration_ms,
                 error_summary or "",
             )
