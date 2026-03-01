@@ -7,12 +7,12 @@ from datetime import datetime
 
 from astrbot.api import logger
 
-from config import JobConfig, RSSConfig
-from dispatcher import FeedDispatcher
-from fetcher import FeedFetcher
-from parser import FeedParser
-from pipeline import FeedPipeline
-from storage import FeedStorage
+from .config import JobConfig, RSSConfig
+from .dispatcher import FeedDispatcher
+from .fetcher import FeedFetcher
+from .parser import FeedParser
+from .pipeline import FeedPipeline
+from .storage import FeedStorage
 
 
 @dataclass(slots=True)

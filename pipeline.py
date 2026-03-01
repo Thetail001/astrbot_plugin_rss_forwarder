@@ -3,7 +3,7 @@ from typing import Any
 
 from astrbot.api import logger
 
-from config import RSSConfig
+from .config import RSSConfig
 
 
 class FeedPipeline:

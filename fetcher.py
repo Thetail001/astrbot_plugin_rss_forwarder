@@ -6,8 +6,8 @@ from urllib.request import Request, urlopen
 
 from astrbot.api import logger
 
-from config import RSSConfig
-from storage import FeedStorage
+from .config import RSSConfig
+from .storage import FeedStorage
 
 
 @dataclass(slots=True)

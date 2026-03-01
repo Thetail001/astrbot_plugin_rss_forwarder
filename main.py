@@ -1,13 +1,13 @@
 from astrbot.api.star import Context, Star, register
 
-from commands import RSSCommands
-from config import RSSConfig
-from dispatcher import FeedDispatcher
-from fetcher import FeedFetcher
-from parser import FeedParser
-from pipeline import FeedPipeline
-from scheduler import RSSScheduler
-from storage import FeedStorage
+from .commands import RSSCommands
+from .config import RSSConfig
+from .dispatcher import FeedDispatcher
+from .fetcher import FeedFetcher
+from .parser import FeedParser
+from .pipeline import FeedPipeline
+from .scheduler import RSSScheduler
+from .storage import FeedStorage
 
 
 @register("astrbot_rss", "AstrBot-RSS", "RSS 订阅抓取与推送插件", "0.2.0")
