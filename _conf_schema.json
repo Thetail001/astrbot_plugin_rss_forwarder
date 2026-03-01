@@ -1,239 +1,123 @@
 {
   "feeds": {
-    "type": "array",
-    "default": [],
-    "items": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "id",
-        "url"
-      ],
-      "properties": {
-        "id": {
-          "type": "string",
-          "minLength": 1,
-          "description": "Feed 唯一 ID"
-        },
-        "url": {
-          "type": "string",
-          "format": "uri",
-          "description": "RSS/Atom 源地址"
-        },
-        "auth_mode": {
-          "type": "string",
-          "enum": [
-            "none",
-            "query",
-            "header"
-          ],
-          "default": "none",
-          "description": "鉴权模式"
-        },
-        "key": {
-          "type": "string",
-          "default": "",
-          "description": "query/header 使用的鉴权密钥"
-        },
-        "enabled": {
-          "type": "boolean",
-          "default": true
-        },
-        "timeout": {
-          "type": "integer",
-          "minimum": 1,
-          "default": 10,
-          "description": "请求超时时间（秒）"
+    "type": "template_list",
+    "description": "RSS 源配置",
+    "templates": {
+      "feed": {
+        "name": "RSS 源",
+        "hint": "配置一个 RSS/Atom 源",
+        "items": {
+          "id": {
+            "type": "string",
+            "default": "",
+            "description": "Feed 唯一 ID"
+          },
+          "url": {
+            "type": "string",
+            "default": "",
+            "description": "RSS/Atom 源地址"
+          },
+          "auth_mode": {
+            "type": "string",
+            "default": "none",
+            "options": ["none", "query", "header"],
+            "description": "鉴权模式"
+          },
+          "key": {
+            "type": "string",
+            "default": "",
+            "description": "query/header 使用的鉴权密钥"
+          },
+          "enabled": {
+            "type": "bool",
+            "default": true,
+            "description": "是否启用该源"
+          },
+          "timeout": {
+            "type": "int",
+            "default": 10,
+            "description": "请求超时时间（秒）"
+          }
         }
       }
     }
   },
   "targets": {
-    "type": "array",
-    "default": [],
-    "items": {
-      "type": "object",
-      "additionalProperties": true,
-      "required": [
-        "id",
-        "platform"
-      ],
-      "properties": {
-        "id": {
-          "type": "string",
-          "minLength": 1,
-          "description": "目标唯一 ID"
-        },
-        "platform": {
-          "type": "string",
-          "minLength": 1,
-          "description": "平台标识，如 qq/telegram"
-        },
-        "unified_msg_origin": {
-          "type": "string",
-          "default": "",
-          "description": "AstrBot 统一会话标识；也可使用平台特有会话字段",
-          "minLength": 1
-        },
-        "enabled": {
-          "type": "boolean",
-          "default": true
+    "type": "template_list",
+    "description": "推送目标配置",
+    "templates": {
+      "target": {
+        "name": "推送目标",
+        "hint": "配置一个消息推送目标",
+        "items": {
+          "id": {
+            "type": "string",
+            "default": "",
+            "description": "目标唯一 ID"
+          },
+          "platform": {
+            "type": "string",
+            "default": "",
+            "description": "平台标识，如 qq/telegram"
+          },
+          "unified_msg_origin": {
+            "type": "string",
+            "default": "",
+            "description": "AstrBot 统一会话标识"
+          },
+          "enabled": {
+            "type": "bool",
+            "default": true,
+            "description": "是否启用该目标"
+          }
         }
-      },
-      "anyOf": [
-        {
-          "required": [
-            "unified_msg_origin"
-          ]
-        },
-        {
-          "required": [
-            "session_id"
-          ]
-        },
-        {
-          "required": [
-            "chat_id"
-          ]
-        }
-      ]
+      }
     }
   },
   "jobs": {
-    "type": "array",
-    "default": [],
-    "items": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "id",
-        "feed_ids",
-        "target_ids"
-      ],
-      "properties": {
-        "id": {
-          "type": "string",
-          "minLength": 1,
-          "description": "任务唯一 ID"
-        },
-        "feed_ids": {
-          "type": "array",
-          "minItems": 1,
-          "items": {
+    "type": "template_list",
+    "description": "任务配置",
+    "templates": {
+      "job": {
+        "name": "轮询任务",
+        "hint": "一个任务可绑定多个 feed 与多个 target",
+        "items": {
+          "id": {
             "type": "string",
-            "minLength": 1
-          }
-        },
-        "target_ids": {
-          "type": "array",
-          "minItems": 1,
-          "items": {
+            "default": "",
+            "description": "任务唯一 ID"
+          },
+          "feed_ids": {
+            "type": "list",
+            "default": [],
+            "description": "关联的 feed ID 列表"
+          },
+          "target_ids": {
+            "type": "list",
+            "default": [],
+            "description": "关联的 target ID 列表"
+          },
+          "cron": {
             "type": "string",
-            "minLength": 1
+            "default": "",
+            "description": "cron 表达式（当前版本可留空）"
+          },
+          "interval_seconds": {
+            "type": "int",
+            "default": 300,
+            "description": "轮询间隔秒数"
+          },
+          "batch_size": {
+            "type": "int",
+            "default": 10,
+            "description": "每次推送最大条数"
+          },
+          "enabled": {
+            "type": "bool",
+            "default": true,
+            "description": "是否启用该任务"
           }
-        },
-        "cron": {
-          "type": "string",
-          "default": "",
-          "description": "cron 表达式，和 interval_seconds 至少其一",
-          "minLength": 1
-        },
-        "interval_seconds": {
-          "type": "integer",
-          "minimum": 1,
-          "description": "轮询间隔秒数，和 cron 至少其一"
-        },
-        "batch_size": {
-          "type": "integer",
-          "minimum": 1,
-          "default": 10
-        },
-        "enabled": {
-          "type": "boolean",
-          "default": true
         }
-      },
-      "anyOf": [
-        {
-          "required": [
-            "cron"
-          ]
-        },
-        {
-          "required": [
-            "interval_seconds"
-          ]
-        }
-      ]
-    }
-  },
-  "llm_enabled": {
-    "type": "boolean",
-    "default": false,
-    "description": "是否启用 LLM 处理摘要/翻译（默认关闭）"
-  },
-  "llm_profile": {
-    "type": "string",
-    "default": "rss_enrich",
-    "description": "LLM 调用使用的 profile 名称"
-  },
-  "max_input_chars": {
-    "type": "integer",
-    "minimum": 1,
-    "default": 2000,
-    "description": "发送给 LLM 的最大输入字符数"
-  },
-  "timeout": {
-    "type": "integer",
-    "minimum": 1,
-    "default": 15,
-    "description": "LLM 调用超时时间（秒）"
-  },
-  "render_mode": {
-    "type": "string",
-    "enum": [
-      "text",
-      "image"
-    ],
-    "default": "text",
-    "description": "消息渲染模式：text(纯文本+链接) / image(图文卡片)"
-  },
-  "summary_max_chars": {
-    "type": "integer",
-    "minimum": 1,
-    "default": 280,
-    "description": "摘要最大长度，超出后会截断并附带“查看全文”链接"
-  },
-  "render_card_template": {
-    "type": "object",
-    "additionalProperties": false,
-    "default": {},
-    "description": "图卡/文本渲染模板字段",
-    "properties": {
-      "title": {
-        "type": "string",
-        "default": "{title}",
-        "description": "标题模板，可用变量：title/source/published_at/summary/link"
-      },
-      "source": {
-        "type": "string",
-        "default": "{source}",
-        "description": "来源模板"
-      },
-      "published_at": {
-        "type": "string",
-        "default": "{published_at}",
-        "description": "时间模板"
-      },
-      "summary": {
-        "type": "string",
-        "default": "{summary}",
-        "description": "摘要模板"
-      },
-      "link_text": {
-        "type": "string",
-        "default": "查看全文",
-        "description": "链接文本模板"
       }
     }
   },
