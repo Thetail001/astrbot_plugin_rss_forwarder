@@ -10,13 +10,12 @@ from scheduler import RSSScheduler
 from storage import FeedStorage
 
 
-@register("astrbot_rss", "AstrBot-RSS", "RSS 订阅抓取与推送插件", "0.1.0")
+@register("astrbot_rss", "AstrBot-RSS", "RSS 订阅抓取与推送插件", "0.2.0")
 class RSSPlugin(Star, RSSCommands):
     def __init__(self, context: Context):
         super().__init__(context)
 
         config = RSSConfig.from_context(context)
-        fetcher = FeedFetcher()
         parser = FeedParser()
         storage = FeedStorage(
             plugin_name="astrbot_rss",
@@ -24,6 +23,7 @@ class RSSPlugin(Star, RSSCommands):
             put_kv_data=getattr(self, "put_kv_data", None),
             delete_kv_data=getattr(self, "delete_kv_data", None),
         )
+        fetcher = FeedFetcher(config=config, storage=storage)
         dispatcher = FeedDispatcher(context=context, config=config)
         pipeline = FeedPipeline(context=context, config=config)
 

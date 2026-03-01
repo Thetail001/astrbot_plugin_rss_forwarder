@@ -34,14 +34,14 @@ class FeedPipeline:
         if not input_text:
             return entry
 
-        provider_id = self._resolve_provider_id(entry)
+        provider_id = await self._resolve_provider_id(entry)
         if not provider_id:
             return entry
 
         prompt = self._build_prompt(input_text)
         llm_call = self.context.llm_generate(
+            chat_provider_id=provider_id,
             prompt=prompt,
-            provider_id=provider_id,
             profile=profile,
         )
         result = await asyncio.wait_for(llm_call, timeout=self._config.timeout)
@@ -64,7 +64,7 @@ class FeedPipeline:
             return ""
         return merged[: self._config.max_input_chars]
 
-    def _resolve_provider_id(self, entry: dict[str, Any]) -> str:
+    async def _resolve_provider_id(self, entry: dict[str, Any]) -> str:
         origin = str(entry.get("unified_msg_origin", "")).strip()
         event = entry.get("event")
         if not origin and event is not None:
@@ -74,7 +74,7 @@ class FeedPipeline:
             return ""
 
         try:
-            provider_id = self.context.get_current_chat_provider_id(origin)
+            provider_id = await self.context.get_current_chat_provider_id(umo=origin)
         except Exception as exc:
             logger.warning("get_current_chat_provider_id failed: %s", exc)
             return ""
@@ -96,7 +96,9 @@ class FeedPipeline:
             return ""
         if isinstance(result, str):
             return result.strip()
-
+        completion_text = getattr(result, "completion_text", None)
+        if isinstance(completion_text, str) and completion_text.strip():
+            return completion_text.strip()
         if isinstance(result, dict):
             for key in ("text", "content", "message", "result"):
                 value = result.get(key)
