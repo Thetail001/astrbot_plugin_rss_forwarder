@@ -17,7 +17,12 @@ class RSSPlugin(Star, RSSCommands):
         config = RSSConfig.from_context(context)
         fetcher = FeedFetcher()
         parser = FeedParser()
-        storage = FeedStorage()
+        storage = FeedStorage(
+            plugin_name="astrbot_rss",
+            get_kv_data=getattr(self, "get_kv_data", None),
+            put_kv_data=getattr(self, "put_kv_data", None),
+            delete_kv_data=getattr(self, "delete_kv_data", None),
+        )
         dispatcher = FeedDispatcher(context=context, config=config)
 
         self.scheduler = RSSScheduler(

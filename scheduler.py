@@ -133,7 +133,7 @@ class RSSScheduler:
 
                 items = self._call_parse(raw_items, job)
                 for item in items:
-                    item_id = str(item.get("id", "")).strip()
+                    item_id = self._storage.build_dedup_key(item)
                     if not item_id or await self._storage.has_seen(item_id):
                         continue
 
@@ -142,6 +142,17 @@ class RSSScheduler:
                     await self._dispatcher.dispatch(event_item)
                     await self._storage.mark_seen(item_id)
                     pushed_count += 1
+
+                feed_meta = self._extract_feed_meta(raw_items)
+                now_ts = int(time.time())
+                for feed_id in job.feed_ids:
+                    meta = feed_meta.get(feed_id, {})
+                    await self._storage.update_feed_state(
+                        feed_id,
+                        etag=meta.get("etag"),
+                        last_modified=meta.get("last_modified"),
+                        last_success_time=now_ts,
+                    )
             except Exception as exc:
                 error_summary = f"{type(exc).__name__}: {exc}"
                 logger.exception("job=%s execution failed", job.id)
@@ -174,6 +185,26 @@ class RSSScheduler:
         if self._accepts_argument(parse_func, expected_count=2):
             return parse_func(raw_items, job)
         return parse_func(raw_items)
+
+    @staticmethod
+    def _extract_feed_meta(raw_items: list[dict]) -> dict[str, dict[str, str]]:
+        """从抓取结果中提取可选的 feed 元信息。"""
+        meta_by_feed: dict[str, dict[str, str]] = {}
+        for raw_item in raw_items:
+            if not isinstance(raw_item, dict):
+                continue
+            feed_id = str(raw_item.get("feed_id", "")).strip()
+            if not feed_id:
+                continue
+            etag = str(raw_item.get("etag", "")).strip()
+            last_modified = str(raw_item.get("last_modified", "")).strip()
+            if not etag and not last_modified:
+                continue
+            meta_by_feed[feed_id] = {
+                "etag": etag,
+                "last_modified": last_modified,
+            }
+        return meta_by_feed
 
     @staticmethod
     def _accepts_argument(func, expected_count: int = 1) -> bool:
