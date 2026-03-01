@@ -12,10 +12,11 @@ from .storage import FeedStorage
 
 @register("astrbot_rss", "AstrBot-RSS", "RSS 订阅抓取与推送插件", "0.2.0")
 class RSSPlugin(Star, RSSCommands):
-    def __init__(self, context: Context):
-        super().__init__(context)
+    def __init__(self, context: Context, config=None):
+        super().__init__(context, config)
 
-        config = RSSConfig.from_context(context)
+        runtime_source = config if config is not None else context
+        config = RSSConfig.from_context(runtime_source)
         parser = FeedParser()
         storage = FeedStorage(
             plugin_name="astrbot_rss",

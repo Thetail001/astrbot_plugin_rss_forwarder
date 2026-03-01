@@ -53,6 +53,14 @@ class RSSCommands:
 
         yield event.plain_result("已触发全部启用且未暂停任务。")
 
+    @filter.command("rss reset")
+    @filter.regex(r"^/?rss\s+reset\s*$")
+    async def rss_reset(self, event: AstrMessageEvent):
+        """清空已推送去重记录，便于调试或重新全量推送。"""
+        scheduler = self.scheduler
+        deleted = await scheduler.storage.clear_seen()
+        yield event.plain_result(f"已清空去重记录：{deleted} 条。")
+
     @filter.command("rss status")
     async def rss_status(self, event: AstrMessageEvent):
         scheduler = self.scheduler
