@@ -11,7 +11,12 @@ from .scheduler import RSSScheduler
 from .storage import FeedStorage
 
 
-@register("astrbot_rss", "AstrBot-RSS", "RSS 订阅抓取与推送插件", "0.2.0")
+@register(
+    "astrbot_rss",
+    "AstrBot RSS Forwarder",
+    "面向 AstrBot 的 RSS/RSSHub 推送编排插件",
+    "0.2.0",
+)
 class RSSPlugin(Star, RSSCommands):
     def __init__(self, context: Context, config=None):
         super().__init__(context, config)
@@ -53,4 +58,3 @@ class RSSPlugin(Star, RSSCommands):
     async def _rss_router(self, event: AstrMessageEvent):
         async for result in RSSCommands.rss_router(self, event):
             yield result
-
