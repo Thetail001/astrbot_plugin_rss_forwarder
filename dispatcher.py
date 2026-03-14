@@ -1,3 +1,4 @@
+from dataclasses import dataclass
 from datetime import datetime
 from html import escape
 from typing import Any
@@ -5,6 +6,14 @@ from typing import Any
 from astrbot.api import logger
 
 from .config import RSSConfig
+
+
+@dataclass(slots=True)
+class DispatchResult:
+    success_count: int = 0
+    permanent_failure_count: int = 0
+    transient_failure_count: int = 0
+    skipped_disabled_count: int = 0
 
 
 class FeedDispatcher:
@@ -19,6 +28,7 @@ class FeedDispatcher:
             if target.enabled and target.unified_msg_origin
         }
         self._job_target_origins = self._build_job_target_map(config)
+        self._disabled_origins: set[str] = set()
 
     def _build_job_target_map(self, config: RSSConfig) -> dict[str, list[str]]:
         mapping: dict[str, list[str]] = {}
@@ -246,11 +256,11 @@ class FeedDispatcher:
                 logger.warning("event.image_result failed, fallback to image_result: %s", exc)
         return image_result
 
-    async def dispatch(self, item: dict) -> int:
+    async def dispatch(self, item: dict) -> DispatchResult:
         origins = self._resolve_origins(item)
         if not origins:
             logger.warning("skip dispatch: no available targets for item=%s", item)
-            return 0
+            return DispatchResult()
 
         if self._config.render_mode == "image":
             payload = await self._build_image_payload(item)
@@ -258,18 +268,49 @@ class FeedDispatcher:
             try:
                 chain = self._build_text_message_chain(item)
             except Exception:
-                return 0
+                return DispatchResult(transient_failure_count=1)
             payload = self._as_chain_result_if_possible(item, chain)
 
-        success_count = 0
+        result = DispatchResult()
         for unified_msg_origin in origins:
+            if unified_msg_origin in self._disabled_origins:
+                result.skipped_disabled_count += 1
+                continue
             try:
                 await self.context.send_message(unified_msg_origin, payload)
-                success_count += 1
+                result.success_count += 1
             except Exception as exc:
+                if self._is_permanent_target_error(exc):
+                    self._disabled_origins.add(unified_msg_origin)
+                    result.permanent_failure_count += 1
+                    logger.error(
+                        "主动消息发送失败 origin=%s: %s。已将该 target 标记为无效，本次运行内不再重试。",
+                        unified_msg_origin,
+                        exc or "unknown error",
+                    )
+                    continue
+                result.transient_failure_count += 1
                 logger.error(
                     "主动消息发送失败 origin=%s: %s。若当前平台不支持主动消息，请在支持的会话渠道配置 target。",
                     unified_msg_origin,
                     exc,
                 )
-        return success_count
+        return result
+
+    @staticmethod
+    def _is_permanent_target_error(exc: Exception) -> bool:
+        text = str(exc or "").strip().lower()
+        if not text:
+            return True
+        permanent_markers = (
+            "not support",
+            "unsupported",
+            "invalid",
+            "not found",
+            "no such",
+            "无效",
+            "不支持",
+            "不存在",
+            "找不到",
+        )
+        return any(marker in text for marker in permanent_markers)

@@ -188,6 +188,7 @@ class RSSScheduler:
             parsed_count = 0
             skipped_seen_count = 0
             skipped_history_count = 0
+            skipped_invalid_target_count = 0
             dispatch_fail_count = 0
             error_summary = ""
 
@@ -218,8 +219,19 @@ class RSSScheduler:
                     event_item.setdefault("job_id", job.id)
                     if self._pipeline is not None:
                         event_item = await self._pipeline.process(event_item)
-                    success_count = await self._dispatcher.dispatch(event_item)
-                    if success_count <= 0:
+                    dispatch_result = await self._dispatcher.dispatch(event_item)
+                    if dispatch_result.success_count <= 0:
+                        permanent_or_disabled = (
+                            dispatch_result.permanent_failure_count > 0
+                            or dispatch_result.skipped_disabled_count > 0
+                        )
+                        if permanent_or_disabled and dispatch_result.transient_failure_count == 0:
+                            await self._storage.mark_seen(
+                                item_id,
+                                ttl_seconds=self._config.dedup_ttl_seconds,
+                            )
+                            skipped_invalid_target_count += 1
+                            continue
                         dispatch_fail_count += 1
                         continue
                     await self._storage.mark_seen(
@@ -251,13 +263,14 @@ class RSSScheduler:
                 error_summary=error_summary,
             )
             logger.info(
-                "job=%s finished: fetched=%s parsed=%s pushed=%s skipped_seen=%s skipped_history=%s dispatch_fail=%s duration_ms=%s error=%s",
+                "job=%s finished: fetched=%s parsed=%s pushed=%s skipped_seen=%s skipped_history=%s skipped_invalid_target=%s dispatch_fail=%s duration_ms=%s error=%s",
                 job.id,
                 fetched_count,
                 parsed_count,
                 pushed_count,
                 skipped_seen_count,
                 skipped_history_count,
+                skipped_invalid_target_count,
                 dispatch_fail_count,
                 duration_ms,
                 error_summary or "",
