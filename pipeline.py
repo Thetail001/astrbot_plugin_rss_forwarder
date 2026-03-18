@@ -24,31 +24,33 @@ class FeedPipeline:
         self._config = config
 
     async def process(self, entry: dict[str, Any]) -> dict[str, Any]:
-        """执行分发前处理，失败时始终回退到原始条目。"""
+        """执行分发前处理，失败时始终回退到清洗后的原文。"""
         if not self._config.llm_enabled and not self._config.google_translate_enabled:
             return entry
 
-        input_text = self._build_llm_input(entry)
-        if not input_text:
+        source = self._extract_source_fields(entry)
+        if not source["title"] and not source["summary"]:
             return entry
 
-        summary = ""
-        if self._config.llm_enabled:
-            summary = await self._try_llm_summary(entry, input_text)
+        translated, selected_engine, llm_reason, google_reason = await self._translate_fields(entry, source)
+        if not translated:
+            translated = self._build_fallback_fields(source)
+            selected_engine = "fallback"
 
-        if not summary and self._config.google_translate_enabled:
-            summary = await self._try_google_translate(input_text)
-
-        if not summary:
-            summary = self._build_fallback_summary(entry)
-
-        if not summary:
-            return entry
+        logger.info(
+            "translation item=%s engine=%s llm=%s google=%s",
+            self._item_ref(entry),
+            selected_engine,
+            llm_reason or "-",
+            google_reason or "-",
+        )
 
         enriched = dict(entry)
-        enriched["summary"] = summary
+        if translated.get("title"):
+            enriched["title"] = translated["title"]
+        if translated.get("summary"):
+            enriched["summary"] = translated["summary"]
         return enriched
-
 
     async def diagnose_translation(self, entry: dict[str, Any] | None = None) -> dict[str, Any]:
         """执行翻译链路自检，不触发消息分发。"""
@@ -56,9 +58,12 @@ class FeedPipeline:
         sample.setdefault("title", "RSS translation diagnostic title")
         sample.setdefault("summary", "This is a translation diagnostics message from RSS forwarder.")
 
-        input_text = self._build_llm_input(sample)
+        source = self._extract_source_fields(sample)
+        input_text = self._build_input_text(source)
+
         report: dict[str, Any] = {
             "input_chars": len(input_text),
+            "selected_engine": "fallback",
             "llm": {
                 "enabled": bool(self._config.llm_enabled),
                 "timeout_seconds": int(self._config.llm_timeout_seconds),
@@ -86,16 +91,20 @@ class FeedPipeline:
         provider_id = await self._resolve_provider_id(sample)
         report["llm"]["provider_id"] = provider_id
 
+        llm_fields: dict[str, str] = {}
         if self._config.llm_enabled:
             loop = asyncio.get_running_loop()
             start = loop.time()
-            llm_summary = await self._try_llm_summary(sample, input_text)
+            llm_fields, llm_reason = await self._try_llm_translate_fields(sample, source)
             report["llm"]["latency_ms"] = int((loop.time() - start) * 1000)
-            if llm_summary:
+            if llm_fields:
                 report["llm"]["ok"] = True
-                report["llm"]["preview"] = self._preview(llm_summary)
-            else:
-                report["llm"]["error"] = "empty_result_or_failed"
+                report["llm"]["preview"] = self._compose_preview(llm_fields)
+                report["llm"]["error"] = ""
+                report["selected_engine"] = "llm"
+                report["google"]["error"] = "skipped_after_llm_success"
+                return report
+            report["llm"]["error"] = llm_reason
         elif provider_id:
             report["llm"]["error"] = "llm_disabled"
         else:
@@ -104,25 +113,51 @@ class FeedPipeline:
         if self._config.google_translate_enabled:
             loop = asyncio.get_running_loop()
             start = loop.time()
-            google_summary = await self._try_google_translate(input_text)
+            google_fields, google_reason = await self._try_google_translate_fields(source)
             report["google"]["latency_ms"] = int((loop.time() - start) * 1000)
-            if google_summary:
+            if google_fields:
                 report["google"]["ok"] = True
-                report["google"]["preview"] = self._preview(google_summary)
+                report["google"]["preview"] = self._compose_preview(google_fields)
+                report["google"]["error"] = ""
+                report["selected_engine"] = "google"
             else:
-                report["google"]["error"] = "empty_result_or_failed"
+                report["google"]["error"] = google_reason
         else:
             report["google"]["error"] = "google_disabled"
 
         return report
 
-    async def _try_llm_summary(self, entry: dict[str, Any], input_text: str) -> str:
+    async def _translate_fields(
+        self,
+        entry: dict[str, Any],
+        source: dict[str, str],
+    ) -> tuple[dict[str, str], str, str, str]:
+        llm_reason = "llm_disabled"
+        google_reason = "google_disabled"
+
+        if self._config.llm_enabled:
+            llm_fields, llm_reason = await self._try_llm_translate_fields(entry, source)
+            if llm_fields:
+                return llm_fields, "llm", llm_reason, "skipped_after_llm_success"
+
+        if self._config.google_translate_enabled:
+            google_fields, google_reason = await self._try_google_translate_fields(source)
+            if google_fields:
+                return google_fields, "google", llm_reason, google_reason
+
+        return {}, "fallback", llm_reason, google_reason
+
+    async def _try_llm_translate_fields(
+        self,
+        entry: dict[str, Any],
+        source: dict[str, str],
+    ) -> tuple[dict[str, str], str]:
         provider_id = await self._resolve_provider_id(entry)
         if not provider_id:
             logger.warning("llm enabled but no available provider id, skip llm enrich")
-            return ""
+            return {}, "provider_missing"
 
-        prompt = self._build_prompt(input_text)
+        prompt = self._build_prompt(source)
         llm_kwargs: dict[str, Any] = {
             "chat_provider_id": provider_id,
             "prompt": prompt,
@@ -131,7 +166,6 @@ class FeedPipeline:
         if profile:
             llm_kwargs["profile"] = profile
 
-        # 尝试透传代理参数（具体是否生效取决于 provider 实现）。
         llm_kwargs.update(self._build_llm_proxy_kwargs())
 
         llm_call = self.context.llm_generate(**llm_kwargs)
@@ -142,43 +176,73 @@ class FeedPipeline:
                 "pipeline llm enrich timeout after %ss, fallback to next translator",
                 self._config.llm_timeout_seconds,
             )
-            return ""
+            return {}, "timeout"
         except Exception as exc:
             logger.warning("pipeline llm enrich failed, fallback to next translator: %s", exc)
-            return ""
+            return {}, f"exception:{type(exc).__name__}"
 
         generated_text = self._extract_generated_text(result)
-        return self._sanitize_text(generated_text)
+        parsed = self._parse_llm_translation(generated_text)
+        if not parsed:
+            logger.warning("pipeline llm enrich returned non-json/invalid payload")
+            return {}, "invalid_payload"
 
-    async def _try_google_translate(self, input_text: str) -> str:
+        title = self._sanitize_text(str(parsed.get("title", "") or ""))
+        summary = self._sanitize_text(str(parsed.get("summary", "") or ""))
+        if not title or not summary:
+            return {}, "empty_fields"
+
+        return {"title": title, "summary": summary}, "ok"
+
+    async def _try_google_translate_fields(self, source: dict[str, str]) -> tuple[dict[str, str], str]:
         api_key = str(self._config.google_translate_api_key or "").strip()
         if not api_key:
             logger.warning("google_translate_enabled=true but api key is empty, skip google translate")
-            return ""
+            return {}, "api_key_missing"
+
+        title = source.get("title", "")
+        summary = source.get("summary", "")
+        if not title or not summary:
+            return {}, "source_empty"
 
         try:
             translated = await asyncio.wait_for(
-                asyncio.to_thread(self._google_translate_blocking, input_text),
+                asyncio.to_thread(self._google_translate_batch_blocking, [title, summary]),
                 timeout=self._config.google_translate_timeout_seconds,
             )
-            return self._sanitize_text(translated)
         except asyncio.TimeoutError:
             logger.warning(
                 "google translate timeout after %ss",
                 self._config.google_translate_timeout_seconds,
             )
-            return ""
+            return {}, "timeout"
         except Exception as exc:
             logger.warning("google translate failed: %s", exc)
-            return ""
+            return {}, f"exception:{type(exc).__name__}"
 
-    def _google_translate_blocking(self, input_text: str) -> str:
-        payload = {
-            "q": input_text,
-            "target": self._config.google_translate_target_lang,
-            "format": "text",
-            "key": self._config.google_translate_api_key,
-        }
+        if len(translated) < 2:
+            return {}, "empty_result"
+
+        title_cn = self._sanitize_text(translated[0])
+        summary_cn = self._sanitize_text(translated[1])
+        if not title_cn or not summary_cn:
+            return {}, "empty_fields"
+
+        return {"title": title_cn, "summary": summary_cn}, "ok"
+
+    def _google_translate_batch_blocking(self, texts: list[str]) -> list[str]:
+        payload: list[tuple[str, str]] = []
+        for text in texts:
+            value = str(text or "").strip()
+            if value:
+                payload.append(("q", value))
+        payload.extend(
+            [
+                ("target", self._config.google_translate_target_lang),
+                ("format", "text"),
+                ("key", self._config.google_translate_api_key),
+            ]
+        )
         body = urlencode(payload, doseq=True).encode("utf-8")
 
         req = Request(
@@ -212,11 +276,15 @@ class FeedPipeline:
             raise RuntimeError(f"google translate api error: {message}")
 
         translations = ((data.get("data") or {}).get("translations") or []) if isinstance(data, dict) else []
-        if not translations:
-            return ""
+        if not isinstance(translations, list):
+            return []
 
-        translated = str((translations[0] or {}).get("translatedText", "")).strip()
-        return unescape(translated)
+        output: list[str] = []
+        for item in translations:
+            text = str((item or {}).get("translatedText", "")).strip()
+            if text:
+                output.append(unescape(text))
+        return output
 
     def _build_google_opener(self):
         mode = str(self._config.google_translate_proxy_mode or "system").strip().lower()
@@ -227,11 +295,9 @@ class FeedPipeline:
 
         if mode == "custom":
             if not proxy_url:
-                # 用户选择 custom 但未填地址时，回退直连。
                 return build_opener(ProxyHandler({}))
             return build_opener(ProxyHandler({"http": proxy_url, "https": proxy_url}))
 
-        # system: 使用容器/系统环境变量中的 HTTP(S)_PROXY。
         return build_opener()
 
     def _build_llm_proxy_kwargs(self) -> dict[str, Any]:
@@ -264,22 +330,72 @@ class FeedPipeline:
             return ""
         return str(provider_id or "").strip()
 
-    def _build_llm_input(self, entry: dict[str, Any]) -> str:
+    def _extract_source_fields(self, entry: dict[str, Any]) -> dict[str, str]:
         title = self._sanitize_text(str(entry.get("title", "") or ""))
-        summary = self._sanitize_text(str(entry.get("summary", "") or ""))
-        content = self._sanitize_text(str(entry.get("content", "") or ""))
-        parts = [part for part in [title, summary, content] if part]
+        summary = self._sanitize_text(str(entry.get("summary", "") or entry.get("content", "") or ""))
+        if not summary and title:
+            summary = title
+        return {"title": title, "summary": summary}
+
+    def _build_input_text(self, source: dict[str, str]) -> str:
+        parts = [part for part in [source.get("title", ""), source.get("summary", "")] if part]
         merged = "\n\n".join(parts)
         if not merged:
             return ""
         return merged[: self._config.max_input_chars]
 
-    def _build_fallback_summary(self, entry: dict[str, Any]) -> str:
-        summary = self._sanitize_text(str(entry.get("summary", "") or entry.get("content", "") or ""))
-        if summary:
-            return summary
-        title = self._sanitize_text(str(entry.get("title", "") or ""))
-        return title
+    @staticmethod
+    def _build_fallback_fields(source: dict[str, str]) -> dict[str, str]:
+        title = str(source.get("title", "") or "").strip()
+        summary = str(source.get("summary", "") or "").strip()
+        return {"title": title, "summary": summary}
+
+    def _build_prompt(self, source: dict[str, str]) -> str:
+        input_text = self._build_input_text(source)
+        return (
+            "请将以下 RSS 新闻翻译为简体中文，并严格只返回 JSON。\n"
+            "输出格式必须是：{\"title\":\"...\",\"summary\":\"...\"}\n"
+            "要求：\n"
+            "1) title 必须是中文标题，不要保留英文原文；\n"
+            "2) summary 必须是中文摘要，不要出现“翻译：”或“摘要：”标签；\n"
+            "3) summary 控制在 180 字以内。\n\n"
+            f"内容：\n{input_text}"
+        )
+
+    @classmethod
+    def _parse_llm_translation(cls, text: str) -> dict[str, str] | None:
+        raw = str(text or "").strip()
+        if not raw:
+            return None
+
+        stripped = cls._strip_code_fence(raw)
+        candidates = [stripped]
+
+        first = stripped.find("{")
+        last = stripped.rfind("}")
+        if first != -1 and last != -1 and first < last:
+            candidates.append(stripped[first : last + 1])
+
+        for candidate in candidates:
+            try:
+                data = json.loads(candidate)
+            except Exception:
+                continue
+            if isinstance(data, dict):
+                return {
+                    "title": str(data.get("title", "") or ""),
+                    "summary": str(data.get("summary", "") or ""),
+                }
+        return None
+
+    @staticmethod
+    def _strip_code_fence(text: str) -> str:
+        value = str(text or "").strip()
+        if value.startswith("```"):
+            value = re.sub(r"^```[a-zA-Z0-9_-]*\n", "", value)
+            if value.endswith("```"):
+                value = value[:-3]
+        return value.strip()
 
     @classmethod
     def _sanitize_text(cls, text: str) -> str:
@@ -291,15 +407,21 @@ class FeedPipeline:
         value = cls._SPACE_RE.sub(" ", value).strip()
         return value
 
+    @classmethod
+    def _compose_preview(cls, fields: dict[str, str]) -> str:
+        title = cls._preview(fields.get("title", ""), limit=40)
+        summary = cls._preview(fields.get("summary", ""), limit=80)
+        if title and summary:
+            return f"标题：{title} | 摘要：{summary}"
+        return title or summary
+
     @staticmethod
-    def _build_prompt(input_text: str) -> str:
-        return (
-            "请对以下 RSS 内容执行处理：\n"
-            "1. 输出一段中文摘要；\n"
-            "2. 若原文不是中文，额外给出中文翻译；\n"
-            "3. 总长度不超过 180 字。\n\n"
-            f"内容：\n{input_text}"
-        )
+    def _item_ref(entry: dict[str, Any]) -> str:
+        for key in ("id", "guid", "link", "title"):
+            value = str(entry.get(key, "") or "").strip()
+            if value:
+                return value[:120]
+        return "unknown"
 
     @staticmethod
     def _preview(text: str, limit: int = 120) -> str:

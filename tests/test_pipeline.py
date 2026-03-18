@@ -47,14 +47,16 @@ class _DummyContext:
     async def llm_generate(self, **kwargs):
         self.llm_calls += 1
         self.last_llm_kwargs = kwargs
-        return types.SimpleNamespace(completion_text="LLM_RESULT")
+        return types.SimpleNamespace(
+            completion_text='{"title":"中文标题","summary":"中文摘要"}'
+        )
 
     async def get_current_chat_provider_id(self, umo):
         return "umo-provider"
 
 
 class PipelineTests(unittest.IsolatedAsyncioTestCase):
-    async def test_llm_uses_configured_provider_id(self):
+    async def test_llm_uses_configured_provider_id_and_translates_title_summary(self):
         ctx = _DummyContext()
         cfg = RSSConfig(
             feeds=[],
@@ -70,14 +72,42 @@ class PipelineTests(unittest.IsolatedAsyncioTestCase):
 
         out = await pipe.process({"title": "Hello", "summary": "World"})
 
-        self.assertEqual(out.get("summary"), "LLM_RESULT")
+        self.assertEqual(out.get("title"), "中文标题")
+        self.assertEqual(out.get("summary"), "中文摘要")
         self.assertEqual(ctx.last_llm_kwargs.get("chat_provider_id"), "manual-provider")
+
+    async def test_llm_success_should_not_call_google(self):
+        ctx = _DummyContext()
+        cfg = RSSConfig(
+            feeds=[],
+            targets=[],
+            jobs=[],
+            llm_enabled=True,
+            llm_provider_id="manual-provider",
+            google_translate_enabled=True,
+            google_translate_api_key="k",
+        )
+        pipe = FeedPipeline(ctx, cfg)
+
+        calls = {"google": 0}
+
+        def google_mock(_texts):
+            calls["google"] += 1
+            return ["谷歌标题", "谷歌摘要"]
+
+        pipe._google_translate_batch_blocking = google_mock
+
+        out = await pipe.process({"title": "Hello", "summary": "World"})
+
+        self.assertEqual(out.get("title"), "中文标题")
+        self.assertEqual(out.get("summary"), "中文摘要")
+        self.assertEqual(calls["google"], 0)
 
     async def test_fallback_to_google_when_llm_times_out(self):
         class TimeoutContext(_DummyContext):
             async def llm_generate(self, **kwargs):
                 await asyncio.sleep(0.05)
-                return types.SimpleNamespace(completion_text="TOO_LATE")
+                return types.SimpleNamespace(completion_text='{"title":"慢","summary":"慢"}')
 
         ctx = TimeoutContext()
         cfg = RSSConfig(
@@ -91,11 +121,20 @@ class PipelineTests(unittest.IsolatedAsyncioTestCase):
             google_translate_api_key="k",
         )
         pipe = FeedPipeline(ctx, cfg)
-        pipe._google_translate_blocking = lambda _text: "GOOGLE_RESULT"
+
+        calls = {"google": 0}
+
+        def google_mock(_texts):
+            calls["google"] += 1
+            return ["谷歌标题", "谷歌摘要"]
+
+        pipe._google_translate_batch_blocking = google_mock
 
         out = await pipe.process({"title": "Hello", "summary": "World"})
 
-        self.assertEqual(out.get("summary"), "GOOGLE_RESULT")
+        self.assertEqual(out.get("title"), "谷歌标题")
+        self.assertEqual(out.get("summary"), "谷歌摘要")
+        self.assertEqual(calls["google"], 1)
 
     async def test_google_direct_when_llm_disabled(self):
         ctx = _DummyContext()
@@ -108,14 +147,15 @@ class PipelineTests(unittest.IsolatedAsyncioTestCase):
             google_translate_api_key="k",
         )
         pipe = FeedPipeline(ctx, cfg)
-        pipe._google_translate_blocking = lambda _text: "GOOGLE_DIRECT"
+        pipe._google_translate_batch_blocking = lambda _texts: ["直连标题", "直连摘要"]
 
         out = await pipe.process({"title": "Hello", "summary": "World"})
 
-        self.assertEqual(out.get("summary"), "GOOGLE_DIRECT")
+        self.assertEqual(out.get("title"), "直连标题")
+        self.assertEqual(out.get("summary"), "直连摘要")
         self.assertEqual(ctx.llm_calls, 0)
 
-    async def test_llm_input_contains_title_and_cleaned_body(self):
+    async def test_prompt_uses_cleaned_content_without_html_tags(self):
         ctx = _DummyContext()
         cfg = RSSConfig(
             feeds=[],
@@ -140,7 +180,7 @@ class PipelineTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("<a href", prompt)
         self.assertNotIn("&quot;", prompt)
 
-    async def test_fallback_to_cleaned_raw_when_both_translators_fail(self):
+    async def test_fallback_to_cleaned_english_when_llm_and_google_fail(self):
         class FailingContext(_DummyContext):
             async def llm_generate(self, **kwargs):
                 raise RuntimeError("boom")
@@ -159,18 +199,19 @@ class PipelineTests(unittest.IsolatedAsyncioTestCase):
         )
         pipe = FeedPipeline(ctx, cfg)
 
-        def fail_google(_text):
+        def fail_google(_texts):
             raise RuntimeError("google fail")
 
-        pipe._google_translate_blocking = fail_google
+        pipe._google_translate_batch_blocking = fail_google
 
         out = await pipe.process(
             {
-                "title": "Title",
+                "title": "English Title",
                 "summary": 'A &quot;<a href="https://x">link</a>&quot; remains',
             }
         )
 
+        self.assertEqual(out.get("title"), "English Title")
         self.assertEqual(out.get("summary"), 'A " link " remains')
 
 
