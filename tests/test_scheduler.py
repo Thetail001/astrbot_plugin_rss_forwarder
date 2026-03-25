@@ -7,7 +7,11 @@ from pathlib import Path
 
 astrbot_module = types.ModuleType("astrbot")
 astrbot_api_module = types.ModuleType("astrbot.api")
-astrbot_api_module.logger = types.SimpleNamespace(info=lambda *a, **k: None)
+astrbot_api_module.logger = types.SimpleNamespace(
+    info=lambda *a, **k: None,
+    warning=lambda *a, **k: None,
+    error=lambda *a, **k: None,
+)
 sys.modules.setdefault("astrbot", astrbot_module)
 sys.modules["astrbot.api"] = astrbot_api_module
 
@@ -144,6 +148,69 @@ class SchedulerPermanentFailureTests(unittest.IsolatedAsyncioTestCase):
         await scheduler._run_job_once_guarded(job)
 
         self.assertEqual(storage.marked, [("item-1", 123)])
+
+
+class SchedulerBatchDedupTests(unittest.IsolatedAsyncioTestCase):
+    async def test_duplicate_items_in_same_batch_are_dispatched_once(self):
+        class FakeStorage:
+            def __init__(self):
+                self.marked = []
+
+            def build_dedup_key(self, item):
+                return item["guid"]
+
+            async def has_seen(self, item_id):
+                return False
+
+            async def mark_seen(self, item_id, ttl_seconds=0):
+                self.marked.append((item_id, ttl_seconds))
+
+            async def get_feed_state(self, feed_id):
+                return {"last_success_time": 0}
+
+            async def update_feed_state(self, *args, **kwargs):
+                return {}
+
+        class FakeFetcher:
+            async def fetch(self, job):
+                return [{"feed_id": "feed-1"}]
+
+        class FakeParser:
+            def parse(self, raw_items, job):
+                return [
+                    {"feed_id": "feed-1", "guid": "dup-1", "title": "Same Item", "published_at": ""},
+                    {"feed_id": "feed-1", "guid": "dup-1", "title": "Same Item", "published_at": ""},
+                ]
+
+        class FakeDispatcher:
+            def __init__(self):
+                self.calls = 0
+
+            async def dispatch(self, item):
+                self.calls += 1
+                return DispatchResult(success_count=1)
+
+        config = types.SimpleNamespace(
+            jobs=[],
+            dedup_ttl_seconds=123,
+            poll_interval_seconds=300,
+        )
+        job = types.SimpleNamespace(id="job-1", feed_ids=["feed-1"], enabled=True, interval_seconds=300)
+        storage = FakeStorage()
+        dispatcher = FakeDispatcher()
+        scheduler = RSSScheduler(
+            config=config,
+            fetcher=FakeFetcher(),
+            parser=FakeParser(),
+            dispatcher=dispatcher,
+            storage=storage,
+            pipeline=None,
+        )
+
+        await scheduler._run_job_once_guarded(job)
+
+        self.assertEqual(dispatcher.calls, 1)
+        self.assertEqual(storage.marked, [("dup-1", 123)])
 
 
 class SchedulerTranslationTest(unittest.IsolatedAsyncioTestCase):

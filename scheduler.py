@@ -238,10 +238,12 @@ class RSSScheduler:
             pushed_count = 0
             parsed_count = 0
             skipped_seen_count = 0
+            skipped_batch_duplicate_count = 0
             skipped_history_count = 0
             skipped_invalid_target_count = 0
             dispatch_fail_count = 0
             error_summary = ""
+            seen_in_run: set[str] = set()
 
             try:
                 raw_items = await self._call_fetch(job)
@@ -255,9 +257,22 @@ class RSSScheduler:
                 parsed_count = len(items)
                 for item in items:
                     item_id = self._storage.build_dedup_key(item)
-                    if not item_id or await self._storage.has_seen(item_id):
+                    if not item_id:
                         skipped_seen_count += 1
                         continue
+                    if item_id in seen_in_run:
+                        skipped_batch_duplicate_count += 1
+                        logger.warning(
+                            "skip job=%s duplicate item in current batch: id=%s title=%s",
+                            job.id,
+                            item_id,
+                            str(item.get("title", "")).strip(),
+                        )
+                        continue
+                    if await self._storage.has_seen(item_id):
+                        skipped_seen_count += 1
+                        continue
+                    seen_in_run.add(item_id)
                     if self._should_mark_history_only(item, feed_state_map, bootstrap_only=True):
                         await self._storage.mark_seen(
                             item_id,
@@ -315,12 +330,13 @@ class RSSScheduler:
                 error_summary=error_summary,
             )
             logger.info(
-                "job=%s finished: fetched=%s parsed=%s pushed=%s skipped_seen=%s skipped_history=%s skipped_invalid_target=%s dispatch_fail=%s duration_ms=%s error=%s",
+                "job=%s finished: fetched=%s parsed=%s pushed=%s skipped_seen=%s skipped_batch_duplicate=%s skipped_history=%s skipped_invalid_target=%s dispatch_fail=%s duration_ms=%s error=%s",
                 job.id,
                 fetched_count,
                 parsed_count,
                 pushed_count,
                 skipped_seen_count,
+                skipped_batch_duplicate_count,
                 skipped_history_count,
                 skipped_invalid_target_count,
                 dispatch_fail_count,
