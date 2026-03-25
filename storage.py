@@ -3,6 +3,7 @@ import json
 import time
 from pathlib import Path
 from typing import Any, Awaitable, Callable
+from urllib.parse import urlsplit, urlunsplit
 
 try:
     from astrbot.api.star import StarTools
@@ -192,6 +193,26 @@ class FeedStorage:
         payload = json.dumps(item, sort_keys=True, ensure_ascii=False)
         return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
+    def build_link_fingerprint(self, item: dict[str, Any]) -> str:
+        """基于规范化 link 生成第二层去重键。"""
+        link = self._normalize_link(str(item.get("link", "")).strip())
+        if not link:
+            return ""
+        digest = hashlib.sha256(link.encode("utf-8")).hexdigest()
+        return f"link:{digest}"
+
+    def build_seen_keys(self, item: dict[str, Any]) -> list[str]:
+        """返回需要同时参与去重的键。"""
+        keys: list[str] = []
+        primary_key = str(self.build_dedup_key(item)).strip()
+        if primary_key:
+            keys.append(primary_key)
+
+        link_fingerprint = self.build_link_fingerprint(item)
+        if link_fingerprint and link_fingerprint not in keys:
+            keys.append(link_fingerprint)
+        return keys
+
     def plugin_cache_dir(self) -> Path:
         """如需大文件缓存，请按规范写入 data/plugin_data/{plugin_name}/。"""
         if StarTools is not None:
@@ -263,3 +284,20 @@ class FeedStorage:
         # 仅依赖内存缓存；首次使用前由 _get_dedup_version 初始化。
         version = self._dedup_version if self._dedup_version is not None else 0
         return f"{self.CONTENT_KEY_PREFIX}v{version}:{item_id}"
+
+    @staticmethod
+    def _normalize_link(link: str) -> str:
+        if not link:
+            return ""
+        parsed = urlsplit(link)
+        if not any((parsed.scheme, parsed.netloc, parsed.path, parsed.query, parsed.fragment)):
+            return link
+        return urlunsplit(
+            (
+                parsed.scheme.lower(),
+                parsed.netloc.lower(),
+                parsed.path,
+                parsed.query,
+                "",
+            )
+        )

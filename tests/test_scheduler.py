@@ -159,6 +159,9 @@ class SchedulerBatchDedupTests(unittest.IsolatedAsyncioTestCase):
             def build_dedup_key(self, item):
                 return item["guid"]
 
+            def build_seen_keys(self, item):
+                return [item["guid"]]
+
             async def has_seen(self, item_id):
                 return False
 
@@ -211,6 +214,95 @@ class SchedulerBatchDedupTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(dispatcher.calls, 1)
         self.assertEqual(storage.marked, [("dup-1", 123)])
+
+    async def test_same_link_with_different_guid_is_dispatched_once(self):
+        class FakeStorage:
+            def __init__(self):
+                self.marked = []
+                self.seen = set()
+
+            def build_dedup_key(self, item):
+                return item["guid"]
+
+            def build_seen_keys(self, item):
+                return [item["guid"], f"link:{item['link']}"]
+
+            async def has_seen(self, item_id):
+                return item_id in self.seen
+
+            async def mark_seen(self, item_id, ttl_seconds=0):
+                self.seen.add(item_id)
+                self.marked.append((item_id, ttl_seconds))
+
+            async def get_feed_state(self, feed_id):
+                return {"last_success_time": 0}
+
+            async def update_feed_state(self, *args, **kwargs):
+                return {}
+
+        class FakeFetcher:
+            async def fetch(self, job):
+                return [{"feed_id": "feed-1"}]
+
+        class FakeParser:
+            def __init__(self):
+                self._calls = 0
+
+            def parse(self, raw_items, job):
+                self._calls += 1
+                if self._calls == 1:
+                    return [
+                        {
+                            "feed_id": "feed-1",
+                            "guid": "guid-1",
+                            "link": "https://example.com/news/1",
+                            "title": "Same Link",
+                            "published_at": "",
+                        }
+                    ]
+                return [
+                    {
+                        "feed_id": "feed-1",
+                        "guid": "guid-2",
+                        "link": "https://example.com/news/1",
+                        "title": "Same Link",
+                        "published_at": "",
+                    }
+                ]
+
+        class FakeDispatcher:
+            def __init__(self):
+                self.calls = 0
+
+            async def dispatch(self, item):
+                self.calls += 1
+                return DispatchResult(success_count=1)
+
+        config = types.SimpleNamespace(
+            jobs=[],
+            dedup_ttl_seconds=123,
+            poll_interval_seconds=300,
+        )
+        job = types.SimpleNamespace(id="job-1", feed_ids=["feed-1"], enabled=True, interval_seconds=300)
+        storage = FakeStorage()
+        dispatcher = FakeDispatcher()
+        scheduler = RSSScheduler(
+            config=config,
+            fetcher=FakeFetcher(),
+            parser=FakeParser(),
+            dispatcher=dispatcher,
+            storage=storage,
+            pipeline=None,
+        )
+
+        await scheduler._run_job_once_guarded(job)
+        await scheduler._run_job_once_guarded(job)
+
+        self.assertEqual(dispatcher.calls, 1)
+        self.assertEqual(
+            storage.marked,
+            [("guid-1", 123), ("link:https://example.com/news/1", 123)],
+        )
 
 
 class SchedulerTranslationTest(unittest.IsolatedAsyncioTestCase):

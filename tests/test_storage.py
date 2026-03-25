@@ -20,6 +20,26 @@ class FeedStorageTests(unittest.IsolatedAsyncioTestCase):
             payload = json.loads(state_path.read_text(encoding="utf-8"))
             self.assertIn("content_seen:v0:item-1", payload["kv"])
 
+    def test_build_seen_keys_include_normalized_link_fingerprint(self):
+        storage = FeedStorage(storage_dir=".")
+
+        keys = storage.build_seen_keys(
+            {
+                "guid": "guid-1",
+                "link": "HTTPS://Example.com/path?a=1#fragment",
+            }
+        )
+
+        self.assertEqual(keys[0], "guid-1")
+        self.assertEqual(len(keys), 2)
+        self.assertEqual(keys[1], storage.build_link_fingerprint({"link": "https://example.com/path?a=1"}))
+
+    def test_build_link_fingerprint_returns_empty_for_missing_link(self):
+        storage = FeedStorage(storage_dir=".")
+
+        self.assertEqual(storage.build_link_fingerprint({"link": ""}), "")
+        self.assertEqual(storage.build_seen_keys({"guid": "guid-1"}), ["guid-1"])
+
     async def test_reads_legacy_backend_keys_and_migrates_them(self):
         stored: dict[str, str] = {
             "content_seen:legacy-item": json.dumps(

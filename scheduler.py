@@ -225,6 +225,26 @@ class RSSScheduler:
         )
         return self._config.poll_interval_seconds
 
+    def _build_seen_keys(self, item: dict) -> list[str]:
+        build_keys = getattr(self._storage, "build_seen_keys", None)
+        if callable(build_keys):
+            keys = [str(key).strip() for key in build_keys(item) if str(key).strip()]
+            if keys:
+                return keys
+
+        item_id = str(self._storage.build_dedup_key(item)).strip()
+        return [item_id] if item_id else []
+
+    async def _has_seen_any(self, keys: list[str]) -> bool:
+        for key in keys:
+            if await self._storage.has_seen(key):
+                return True
+        return False
+
+    async def _mark_seen_all(self, keys: list[str], ttl_seconds: int) -> None:
+        for key in keys:
+            await self._storage.mark_seen(key, ttl_seconds=ttl_seconds)
+
     async def _run_job_once_guarded(self, job: JobConfig) -> None:
         job_lock = self._job_locks.setdefault(job.id, asyncio.Lock())
         if job_lock.locked():
@@ -256,11 +276,12 @@ class RSSScheduler:
                 items = self._call_parse(raw_items, job)
                 parsed_count = len(items)
                 for item in items:
-                    item_id = self._storage.build_dedup_key(item)
-                    if not item_id:
+                    seen_keys = self._build_seen_keys(item)
+                    if not seen_keys:
                         skipped_seen_count += 1
                         continue
-                    if item_id in seen_in_run:
+                    item_id = seen_keys[0]
+                    if any(key in seen_in_run for key in seen_keys):
                         skipped_batch_duplicate_count += 1
                         logger.warning(
                             "skip job=%s duplicate item in current batch: id=%s title=%s",
@@ -269,15 +290,12 @@ class RSSScheduler:
                             str(item.get("title", "")).strip(),
                         )
                         continue
-                    if await self._storage.has_seen(item_id):
+                    if await self._has_seen_any(seen_keys):
                         skipped_seen_count += 1
                         continue
-                    seen_in_run.add(item_id)
+                    seen_in_run.update(seen_keys)
                     if self._should_mark_history_only(item, feed_state_map, bootstrap_only=True):
-                        await self._storage.mark_seen(
-                            item_id,
-                            ttl_seconds=self._config.dedup_ttl_seconds,
-                        )
+                        await self._mark_seen_all(seen_keys, ttl_seconds=self._config.dedup_ttl_seconds)
                         skipped_history_count += 1
                         continue
 
@@ -292,18 +310,15 @@ class RSSScheduler:
                             or dispatch_result.skipped_disabled_count > 0
                         )
                         if permanent_or_disabled and dispatch_result.transient_failure_count == 0:
-                            await self._storage.mark_seen(
-                                item_id,
+                            await self._mark_seen_all(
+                                seen_keys,
                                 ttl_seconds=self._config.dedup_ttl_seconds,
                             )
                             skipped_invalid_target_count += 1
                             continue
                         dispatch_fail_count += 1
                         continue
-                    await self._storage.mark_seen(
-                        item_id,
-                        ttl_seconds=self._config.dedup_ttl_seconds,
-                    )
+                    await self._mark_seen_all(seen_keys, ttl_seconds=self._config.dedup_ttl_seconds)
                     pushed_count += 1
 
                 feed_meta = self._extract_feed_meta(raw_items)
