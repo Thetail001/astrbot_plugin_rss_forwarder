@@ -1,7 +1,13 @@
+import asyncio
+import hashlib
+import json
 from dataclasses import dataclass
 from datetime import datetime
 from html import escape
 from typing import Any
+from urllib.error import HTTPError, URLError
+from urllib.parse import urlsplit, urlunsplit
+from urllib.request import Request, urlopen
 
 from astrbot.api import logger
 
@@ -14,14 +20,20 @@ class DispatchResult:
     permanent_failure_count: int = 0
     transient_failure_count: int = 0
     skipped_disabled_count: int = 0
+    skipped_duplicate_count: int = 0
 
 
 class FeedDispatcher:
     """分发层：负责把新内容推送到目标会话/渠道。"""
 
-    def __init__(self, context, config: RSSConfig) -> None:
+    _PENDING_DISPATCH_TTL_SECONDS = 120
+    _IMAGE_HASH_TIMEOUT_SECONDS = 8
+    _IMAGE_HASH_MAX_BYTES = 8 * 1024 * 1024
+
+    def __init__(self, context, config: RSSConfig, storage=None) -> None:
         self.context = context
         self._config = config
+        self._storage = storage
         self._target_map = {
             target.id: target
             for target in config.targets
@@ -109,6 +121,121 @@ class FeedDispatcher:
             "link": link,
             "truncated": "1" if truncated else "0",
         }
+
+    @staticmethod
+    def _normalize_text(value: Any) -> str:
+        text = str(value or "").strip()
+        return " ".join(text.split())
+
+    @staticmethod
+    def _normalize_url(url: str) -> str:
+        text = str(url or "").strip()
+        if not text:
+            return ""
+        parsed = urlsplit(text)
+        if not any((parsed.scheme, parsed.netloc, parsed.path, parsed.query, parsed.fragment)):
+            return text
+        return urlunsplit(
+            (
+                parsed.scheme.lower(),
+                parsed.netloc.lower(),
+                parsed.path,
+                parsed.query,
+                "",
+            )
+        )
+
+    async def _build_dispatch_fingerprint(self, item: dict[str, Any], origin: str) -> str:
+        source_title = item.get("_source_title", "")
+        source_summary = item.get("_source_summary", "")
+        title = self._normalize_text(source_title or item.get("title", ""))
+        summary = self._normalize_text(source_summary or item.get("summary", "") or item.get("content", ""))
+        payload = {
+            "origin": str(origin or "").strip(),
+            "guid": self._normalize_text(item.get("guid", "") or item.get("id", "")),
+            "link": self._normalize_url(str(item.get("link", "") or "")),
+            "title": title,
+            "published_at": self._normalize_text(item.get("published_at", "") or item.get("published", "")),
+            "summary_sha256": (
+                hashlib.sha256(summary.encode("utf-8")).hexdigest() if summary else ""
+            ),
+            "render_mode": str(self._config.render_mode or "text").strip(),
+        }
+        image_url = str(item.get("image_url", "") or "").strip()
+        if image_url:
+            image_digest = await self._hash_image_bytes(image_url)
+            if image_digest:
+                payload["image_sha256"] = image_digest
+            else:
+                payload["image_url"] = self._normalize_url(image_url)
+        encoded = json.dumps(payload, sort_keys=True, ensure_ascii=False)
+        return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+    async def _hash_image_bytes(self, image_url: str) -> str:
+        normalized = self._normalize_url(image_url)
+        if not normalized:
+            return ""
+
+        try:
+            return await asyncio.to_thread(self._hash_image_bytes_sync, normalized)
+        except (HTTPError, URLError, OSError, ValueError):
+            return ""
+
+    def _hash_image_bytes_sync(self, image_url: str) -> str:
+        request = Request(
+            image_url,
+            headers={"User-Agent": "AstrBotRSSForwarder/0.3.5"},
+        )
+        digest = hashlib.sha256()
+        total = 0
+        with urlopen(request, timeout=self._IMAGE_HASH_TIMEOUT_SECONDS) as response:
+            while True:
+                chunk = response.read(65536)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > self._IMAGE_HASH_MAX_BYTES:
+                    raise ValueError("image_too_large_for_hash")
+                digest.update(chunk)
+        if total <= 0:
+            return ""
+        return digest.hexdigest()
+
+    async def _claim_dispatch(self, fingerprint: str) -> bool:
+        claim = getattr(self._storage, "claim_dispatch", None)
+        if not callable(claim):
+            return True
+        try:
+            return bool(
+                await claim(
+                    fingerprint,
+                    ttl_seconds=self._PENDING_DISPATCH_TTL_SECONDS,
+                )
+            )
+        except Exception as exc:
+            logger.warning("claim dispatch fingerprint failed: %s", exc)
+            return True
+
+    async def _confirm_dispatch(self, fingerprint: str) -> None:
+        confirm = getattr(self._storage, "confirm_dispatch", None)
+        if not callable(confirm):
+            return
+        try:
+            await confirm(
+                fingerprint,
+                ttl_seconds=max(int(getattr(self._config, "dedup_ttl_seconds", 0) or 0), 1),
+            )
+        except Exception as exc:
+            logger.warning("confirm dispatch fingerprint failed: %s", exc)
+
+    async def _release_dispatch(self, fingerprint: str) -> None:
+        release = getattr(self._storage, "release_dispatch", None)
+        if not callable(release):
+            return
+        try:
+            await release(fingerprint)
+        except Exception as exc:
+            logger.warning("release dispatch fingerprint failed: %s", exc)
 
     @staticmethod
     def _safe_format(template: str, values: dict[str, str]) -> str:
@@ -323,9 +450,20 @@ class FeedDispatcher:
             if unified_msg_origin in self._disabled_origins:
                 result.skipped_disabled_count += 1
                 continue
+            fingerprint = await self._build_dispatch_fingerprint(item, unified_msg_origin)
+            if not await self._claim_dispatch(fingerprint):
+                result.skipped_duplicate_count += 1
+                logger.warning(
+                    "skip duplicate dispatch origin=%s item=%s fingerprint=%s",
+                    unified_msg_origin,
+                    str(item.get("guid", "") or item.get("title", "")).strip(),
+                    fingerprint[:12],
+                )
+                continue
             try:
                 await self.context.send_message(unified_msg_origin, payload)
                 result.success_count += 1
+                await self._confirm_dispatch(fingerprint)
                 if extra_image_payload is not None:
                     try:
                         await self.context.send_message(unified_msg_origin, extra_image_payload)
@@ -336,6 +474,7 @@ class FeedDispatcher:
                             exc,
                         )
             except Exception as exc:
+                await self._release_dispatch(fingerprint)
                 if self._is_permanent_target_error(exc):
                     self._disabled_origins.add(unified_msg_origin)
                     result.permanent_failure_count += 1

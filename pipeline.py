@@ -35,6 +35,10 @@ class FeedPipeline:
         if not source["title"] and not source["summary"]:
             return entry
 
+        enriched = dict(entry)
+        enriched.setdefault("_source_title", source.get("title", ""))
+        enriched.setdefault("_source_summary", source.get("summary", ""))
+
         (
             translated,
             selected_engine,
@@ -55,7 +59,6 @@ class FeedPipeline:
             github_reason or "-",
         )
 
-        enriched = dict(entry)
         if translated.get("title"):
             enriched["title"] = translated["title"]
         if translated.get("summary"):

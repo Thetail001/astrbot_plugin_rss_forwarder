@@ -1,3 +1,4 @@
+import asyncio
 import sys
 import types
 import unittest
@@ -148,6 +149,37 @@ class SchedulerPermanentFailureTests(unittest.IsolatedAsyncioTestCase):
         await scheduler._run_job_once_guarded(job)
 
         self.assertEqual(storage.marked, [("item-1", 123)])
+
+
+class SchedulerTaskCleanupTests(unittest.IsolatedAsyncioTestCase):
+    async def test_start_cancels_stale_job_tasks(self):
+        async def stale_loop():
+            try:
+                await asyncio.sleep(30)
+            except asyncio.CancelledError:
+                raise
+
+        stale_task = asyncio.create_task(stale_loop(), name="rss-job-stale")
+        await asyncio.sleep(0)
+
+        config = types.SimpleNamespace(
+            jobs=[],
+            dedup_ttl_seconds=123,
+            poll_interval_seconds=300,
+            startup_delay_seconds=0,
+        )
+        scheduler = RSSScheduler(
+            config=config,
+            fetcher=types.SimpleNamespace(),
+            parser=types.SimpleNamespace(),
+            dispatcher=types.SimpleNamespace(),
+            storage=types.SimpleNamespace(),
+            pipeline=None,
+        )
+
+        await scheduler.start()
+
+        self.assertTrue(stale_task.cancelled() or stale_task.done())
 
 
 class SchedulerBatchDedupTests(unittest.IsolatedAsyncioTestCase):

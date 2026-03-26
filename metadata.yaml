@@ -1,6 +1,6 @@
 name: astrbot_plugin_rss_forwarder
 display_name: AstrBot RSS Forwarder
 desc: 面向 AstrBot 的 RSS/RSSHub 推送编排插件，支持去重、路由与后续智能增强。
-version: v0.3.4
+version: v0.3.5
 author: RhoninSeiei
 repo: https://github.com/RhoninSeiei/astrbot_plugin_rss_forwarder

@@ -65,6 +65,19 @@ class FeedStorageTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(await storage.has_seen("legacy-item"))
             self.assertIn("content_seen:v1:legacy-item", stored)
 
+    async def test_dispatch_guard_claim_confirm_and_release(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            storage = FeedStorage(storage_dir=tmpdir)
+
+            self.assertTrue(await storage.claim_dispatch("fingerprint-1", ttl_seconds=30))
+            self.assertFalse(await storage.claim_dispatch("fingerprint-1", ttl_seconds=30))
+
+            await storage.release_dispatch("fingerprint-1")
+            self.assertTrue(await storage.claim_dispatch("fingerprint-1", ttl_seconds=30))
+
+            await storage.confirm_dispatch("fingerprint-1", ttl_seconds=3600)
+            self.assertFalse(await storage.claim_dispatch("fingerprint-1", ttl_seconds=30))
+
 
 if __name__ == "__main__":
     unittest.main()

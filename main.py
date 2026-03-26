@@ -15,7 +15,7 @@ from .storage import FeedStorage
     "astrbot_rss",
     "AstrBot RSS Forwarder",
     "面向 AstrBot 的 RSS/RSSHub 推送编排插件",
-    "0.3.4",
+    "0.3.5",
 )
 class RSSPlugin(Star, RSSCommands):
     def __init__(self, context: Context, config=None):
@@ -31,7 +31,7 @@ class RSSPlugin(Star, RSSCommands):
             delete_kv_data=getattr(self, "delete_kv_data", None),
         )
         fetcher = FeedFetcher(config=config, storage=storage)
-        dispatcher = FeedDispatcher(context=context, config=config)
+        dispatcher = FeedDispatcher(context=context, config=config, storage=storage)
         pipeline = FeedPipeline(context=context, config=config)
 
         self.scheduler = RSSScheduler(

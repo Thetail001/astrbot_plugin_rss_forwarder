@@ -69,6 +69,7 @@ class RSSScheduler:
         if self.running:
             return
 
+        await self._cancel_stale_job_tasks()
         for job in self._config.jobs:
             if not job.enabled:
                 continue
@@ -91,6 +92,31 @@ class RSSScheduler:
         self._job_tasks.clear()
         self._job_locks.clear()
         logger.info("RSS scheduler stopped")
+
+    async def _cancel_stale_job_tasks(self) -> None:
+        current_task = asyncio.current_task()
+        stale_tasks: list[asyncio.Task] = []
+        for task in asyncio.all_tasks():
+            if task is current_task or task.done():
+                continue
+            if not task.get_name().startswith("rss-job-"):
+                continue
+            stale_tasks.append(task)
+
+        if not stale_tasks:
+            return
+
+        for task in stale_tasks:
+            task.cancel()
+
+        for task in stale_tasks:
+            with suppress(asyncio.CancelledError):
+                await task
+
+        logger.warning(
+            "cancelled stale rss scheduler tasks=%s",
+            [task.get_name() for task in stale_tasks],
+        )
 
     async def run_once(self) -> None:
         """手动触发：并发执行所有启用 job。"""
@@ -259,6 +285,7 @@ class RSSScheduler:
             parsed_count = 0
             skipped_seen_count = 0
             skipped_batch_duplicate_count = 0
+            skipped_dispatch_duplicate_count = 0
             skipped_history_count = 0
             skipped_invalid_target_count = 0
             dispatch_fail_count = 0
@@ -305,6 +332,17 @@ class RSSScheduler:
                         event_item = await self._pipeline.process(event_item)
                     dispatch_result = await self._dispatcher.dispatch(event_item)
                     if dispatch_result.success_count <= 0:
+                        if (
+                            dispatch_result.skipped_duplicate_count > 0
+                            and dispatch_result.permanent_failure_count == 0
+                            and dispatch_result.transient_failure_count == 0
+                        ):
+                            await self._mark_seen_all(
+                                seen_keys,
+                                ttl_seconds=self._config.dedup_ttl_seconds,
+                            )
+                            skipped_dispatch_duplicate_count += dispatch_result.skipped_duplicate_count
+                            continue
                         permanent_or_disabled = (
                             dispatch_result.permanent_failure_count > 0
                             or dispatch_result.skipped_disabled_count > 0
@@ -345,13 +383,14 @@ class RSSScheduler:
                 error_summary=error_summary,
             )
             logger.info(
-                "job=%s finished: fetched=%s parsed=%s pushed=%s skipped_seen=%s skipped_batch_duplicate=%s skipped_history=%s skipped_invalid_target=%s dispatch_fail=%s duration_ms=%s error=%s",
+                "job=%s finished: fetched=%s parsed=%s pushed=%s skipped_seen=%s skipped_batch_duplicate=%s skipped_dispatch_duplicate=%s skipped_history=%s skipped_invalid_target=%s dispatch_fail=%s duration_ms=%s error=%s",
                 job.id,
                 fetched_count,
                 parsed_count,
                 pushed_count,
                 skipped_seen_count,
                 skipped_batch_duplicate_count,
+                skipped_dispatch_duplicate_count,
                 skipped_history_count,
                 skipped_invalid_target_count,
                 dispatch_fail_count,

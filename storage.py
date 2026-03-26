@@ -6,6 +6,11 @@ from typing import Any, Awaitable, Callable
 from urllib.parse import urlsplit, urlunsplit
 
 try:
+    import fcntl
+except ImportError:  # pragma: no cover - non-POSIX fallback.
+    fcntl = None
+
+try:
     from astrbot.api.star import StarTools
 except ImportError:  # pragma: no cover - unit tests may run without AstrBot runtime.
     StarTools = None
@@ -18,6 +23,7 @@ class FeedStorage:
     CONTENT_KEY_PREFIX = "content_seen:"
     CONTENT_INDEX_KEY = "content_seen_index"
     DEDUP_VERSION_KEY = "content_seen_version"
+    DISPATCH_GUARD_PREFIX = "dispatch_guard:"
 
     def __init__(
         self,
@@ -144,6 +150,35 @@ class FeedStorage:
         await self.put(self.DEDUP_VERSION_KEY, self._dedup_version)
         return deleted
 
+    async def claim_dispatch(self, fingerprint: str, ttl_seconds: int = 120) -> bool:
+        """发送前占位，避免并发实例重复发送同一条消息。"""
+        key = self._dispatch_guard_key(fingerprint)
+        if not key:
+            return True
+        return bool(
+            self._update_dispatch_guard(
+                key,
+                action="claim",
+                ttl_seconds=max(int(ttl_seconds), 1),
+            )
+        )
+
+    async def confirm_dispatch(self, fingerprint: str, ttl_seconds: int = 86400) -> None:
+        key = self._dispatch_guard_key(fingerprint)
+        if not key:
+            return
+        self._update_dispatch_guard(
+            key,
+            action="confirm",
+            ttl_seconds=max(int(ttl_seconds), 1),
+        )
+
+    async def release_dispatch(self, fingerprint: str) -> None:
+        key = self._dispatch_guard_key(fingerprint)
+        if not key:
+            return
+        self._update_dispatch_guard(key, action="release")
+
     async def _get_dedup_version(self) -> int:
         if self._dedup_version is not None:
             return self._dedup_version
@@ -237,9 +272,12 @@ class FeedStorage:
         self._disk_state.setdefault("kv", {})
 
     def _flush_state(self) -> None:
+        self._write_disk_state(self._disk_state)
+
+    def _write_disk_state(self, state: dict[str, Any]) -> None:
         self._state_path.parent.mkdir(parents=True, exist_ok=True)
         with self._state_path.open("w", encoding="utf-8") as fp:
-            json.dump(self._disk_state, fp, ensure_ascii=False, sort_keys=True)
+            json.dump(state, fp, ensure_ascii=False, sort_keys=True)
 
     async def _read_raw_from_backend(self, key: str) -> Any:
         if self._get_kv_data is None:
@@ -285,6 +323,12 @@ class FeedStorage:
         version = self._dedup_version if self._dedup_version is not None else 0
         return f"{self.CONTENT_KEY_PREFIX}v{version}:{item_id}"
 
+    def _dispatch_guard_key(self, fingerprint: str) -> str:
+        value = str(fingerprint or "").strip()
+        if not value:
+            return ""
+        return f"{self.DISPATCH_GUARD_PREFIX}{value}"
+
     @staticmethod
     def _normalize_link(link: str) -> str:
         if not link:
@@ -301,3 +345,80 @@ class FeedStorage:
                 "",
             )
         )
+
+    @staticmethod
+    def _is_guard_active(record: Any, now: int) -> bool:
+        if not isinstance(record, dict):
+            return False
+        expire_at = int(record.get("expire_at", 0) or 0)
+        return expire_at <= 0 or expire_at >= now
+
+    def _load_disk_state_from_file(self) -> dict[str, Any]:
+        try:
+            if self._state_path.exists():
+                with self._state_path.open("r", encoding="utf-8") as fp:
+                    loaded = json.load(fp)
+                if isinstance(loaded, dict):
+                    loaded.setdefault("kv", {})
+                    return loaded
+        except (OSError, json.JSONDecodeError):
+            pass
+        return {"kv": {}}
+
+    def _with_state_lock(self, callback: Callable[[dict[str, Any], int], Any]) -> Any:
+        lock_path = self._state_path.parent / "state.lock"
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        with lock_path.open("a+", encoding="utf-8") as lock_fp:
+            if fcntl is not None:
+                fcntl.flock(lock_fp.fileno(), fcntl.LOCK_EX)
+            try:
+                state = self._load_disk_state_from_file()
+                now = int(time.time())
+                result = callback(state, now)
+                self._disk_state = state
+                self._state_loaded = True
+                return result
+            finally:
+                if fcntl is not None:
+                    fcntl.flock(lock_fp.fileno(), fcntl.LOCK_UN)
+
+    def _update_dispatch_guard(
+        self,
+        key: str,
+        *,
+        action: str,
+        ttl_seconds: int = 0,
+    ) -> bool | None:
+        def callback(state: dict[str, Any], now: int):
+            kv = state.setdefault("kv", {})
+            record = kv.get(key)
+
+            if action == "claim":
+                if self._is_guard_active(record, now):
+                    return False
+                kv[key] = {
+                    "state": "pending",
+                    "expire_at": now + max(ttl_seconds, 1),
+                    "updated_at": now,
+                }
+                self._write_disk_state(state)
+                return True
+
+            if action == "confirm":
+                kv[key] = {
+                    "state": "sent",
+                    "expire_at": now + max(ttl_seconds, 1),
+                    "updated_at": now,
+                }
+                self._write_disk_state(state)
+                return None
+
+            if action == "release":
+                if isinstance(record, dict) and record.get("state") == "pending":
+                    kv.pop(key, None)
+                    self._write_disk_state(state)
+                return None
+
+            raise ValueError(f"unknown dispatch guard action: {action}")
+
+        return self._with_state_lock(callback)
