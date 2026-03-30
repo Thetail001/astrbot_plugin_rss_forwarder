@@ -207,7 +207,7 @@ class FeedDispatcher:
     def _hash_image_bytes_sync(self, image_url: str) -> str:
         request = Request(
             image_url,
-            headers={"User-Agent": "AstrBotRSSForwarder/0.4.0"},
+            headers={"User-Agent": "AstrBotRSSForwarder/0.4.1"},
         )
         digest = hashlib.sha256()
         total = 0

@@ -363,6 +363,8 @@ class RSSConfig:
         target_ids = {target.id for target in self.targets}
 
         for feed in self.feeds:
+            if not feed.enabled:
+                continue
             if not feed.id:
                 raise ConfigValidationError("feeds.id 不能为空")
             self._validate_url(feed.url, f"feeds[{feed.id}].url")
@@ -374,6 +376,8 @@ class RSSConfig:
                 raise ConfigValidationError(f"feeds[{feed.id}].timeout 必须 > 0")
 
         for target in self.targets:
+            if not target.enabled:
+                continue
             if not target.id:
                 raise ConfigValidationError("targets.id 不能为空")
             if not target.platform:
@@ -435,6 +439,8 @@ class RSSConfig:
             )
 
         for job in self.jobs:
+            if not job.enabled:
+                continue
             if not job.id:
                 raise ConfigValidationError("jobs.id 不能为空")
             if not job.feed_ids:
@@ -460,6 +466,8 @@ class RSSConfig:
                 )
 
         for digest in self.daily_digests:
+            if not digest.enabled:
+                continue
             if not digest.id:
                 raise ConfigValidationError("daily_digests.id 不能为空")
             if not digest.title:

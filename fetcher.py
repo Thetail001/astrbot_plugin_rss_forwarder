@@ -87,7 +87,7 @@ class FeedFetcher:
     @staticmethod
     def _build_url_and_headers(feed) -> tuple[str, dict[str, str]]:
         headers = {
-            "User-Agent": "astrbot_plugin_rss_forwarder/0.4.0 (+https://github.com/RhoninSeiei/astrbot_plugin_rss_forwarder)",
+            "User-Agent": "astrbot_plugin_rss_forwarder/0.4.1 (+https://github.com/RhoninSeiei/astrbot_plugin_rss_forwarder)",
             "Accept": "application/rss+xml, application/atom+xml, application/xml, text/xml;q=0.9, */*;q=0.1",
         }
         url = feed.url

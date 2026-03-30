@@ -34,8 +34,9 @@
           },
           "enabled": {
             "type": "bool",
-            "default": true,
-            "description": "是否启用该源"
+            "default": false,
+            "description": "是否启用该源",
+            "hint": "新建条目默认关闭，补全 Feed ID 与地址后再启用。"
           },
           "timeout": {
             "type": "int",
@@ -67,12 +68,14 @@
           "unified_msg_origin": {
             "type": "string",
             "default": "",
-            "description": "AstrBot 统一会话标识"
+            "description": "AstrBot 统一会话标识",
+            "hint": "启用该目标时必须填写，可先保存为草稿，补全后再启用。"
           },
           "enabled": {
             "type": "bool",
-            "default": true,
-            "description": "是否启用该目标"
+            "default": false,
+            "description": "是否启用该目标",
+            "hint": "新建条目默认关闭，补全平台与会话标识后再启用。"
           }
         }
       }
@@ -118,8 +121,9 @@
           },
           "enabled": {
             "type": "bool",
-            "default": true,
-            "description": "是否启用该任务"
+            "default": false,
+            "description": "是否启用该任务",
+            "hint": "新建条目默认关闭，补全 feed 与 target 关联后再启用。"
           }
         }
       }
@@ -188,7 +192,8 @@
           "enabled": {
             "type": "bool",
             "default": false,
-            "description": "是否启用该日报任务"
+            "description": "是否启用该日报任务",
+            "hint": "可先保存为草稿，补全 feed、target 与发送时间后再启用。"
           }
         }
       }

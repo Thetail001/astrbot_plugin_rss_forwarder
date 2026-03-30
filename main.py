@@ -15,7 +15,7 @@ from .storage import FeedStorage
     "astrbot_rss",
     "AstrBot RSS Forwarder",
     "面向 AstrBot 的 RSS/RSSHub 推送编排插件",
-    "0.4.0",
+    "0.4.1",
 )
 class RSSPlugin(Star, RSSCommands):
     def __init__(self, context: Context, config=None):

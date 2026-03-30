@@ -152,6 +152,64 @@ class ConfigTranslationTests(unittest.TestCase):
         with self.assertRaises(ConfigValidationError):
             RSSConfig.from_context(conf)
 
+    def test_disabled_draft_entries_can_be_saved(self):
+        conf = {
+            "feeds": [
+                {
+                    "id": "",
+                    "url": "",
+                    "enabled": False,
+                }
+            ],
+            "targets": [
+                {
+                    "id": "target-draft",
+                    "platform": "qq",
+                    "unified_msg_origin": "",
+                    "enabled": False,
+                }
+            ],
+            "jobs": [
+                {
+                    "id": "job-draft",
+                    "feed_ids": [],
+                    "target_ids": [],
+                    "interval_seconds": 0,
+                    "enabled": False,
+                }
+            ],
+            "daily_digests": [
+                {
+                    "id": "digest-draft",
+                    "feed_ids": [],
+                    "target_ids": [],
+                    "send_time": "09:00",
+                    "enabled": False,
+                }
+            ],
+        }
+
+        cfg = RSSConfig.from_context(conf)
+
+        self.assertFalse(cfg.feeds[0].enabled)
+        self.assertFalse(cfg.targets[0].enabled)
+        self.assertFalse(cfg.jobs[0].enabled)
+        self.assertFalse(cfg.daily_digests[0].enabled)
+
+    def test_enabled_target_requires_unified_msg_origin(self):
+        conf = _minimal_runtime_conf()
+        conf["targets"] = [
+            {
+                "id": "target-1",
+                "platform": "qq",
+                "unified_msg_origin": "",
+                "enabled": True,
+            }
+        ]
+
+        with self.assertRaises(ConfigValidationError):
+            RSSConfig.from_context(conf)
+
 
 if __name__ == "__main__":
     unittest.main()
