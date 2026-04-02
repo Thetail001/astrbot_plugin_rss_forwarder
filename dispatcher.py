@@ -75,9 +75,9 @@ class FeedDispatcher:
                 if job.enabled and feed_id in job.feed_ids:
                     origins.update(self._job_target_origins.get(job.id, []))
 
-        if not origins:
-            for origin_list in self._job_target_origins.values():
-                origins.update(origin_list)
+        # Note: 不再使用 fallback 推送到所有 target
+        # 如果找不到匹配的 origins，返回空列表（不推送）
+        # 这避免了 feed 内容被错误地推送到不相关的 target
         return sorted(origins)
 
     def _resolve_target_origins(self, target_ids: list[str]) -> list[str]:
@@ -120,6 +120,8 @@ class FeedDispatcher:
         published_at = self._format_time(item)
         summary, truncated = self._truncate_summary(item)
         link = str(item.get("link", "")).strip()
+        category = str(item.get("category", "")).strip()
+        author = str(item.get("author", "")).strip()
 
         return {
             "title": title,
@@ -128,6 +130,8 @@ class FeedDispatcher:
             "summary": summary,
             "link": link,
             "truncated": "1" if truncated else "0",
+            "category": category,
+            "author": author,
         }
 
     @staticmethod
@@ -336,6 +340,7 @@ class FeedDispatcher:
             raise
 
     def _build_text_message_chain(self, item: dict[str, Any]):
+        """构建文本模式的消息链，图片无效时降级为纯文本。"""
         data = self._build_render_data(item)
         template = self._config.render_card_template
 
@@ -352,20 +357,62 @@ class FeedDispatcher:
             for line in [
                 title,
                 f"来源：{source}" if source else "",
+                f"分类：{data['category']}" if data["category"] else "",
+                f"作者：{data['author']}" if data["author"] else "",
                 f"时间：{published_at}" if published_at else "",
                 summary,
             ]
             if line
         ]
 
+        link_line = ""
+        if link:
+            link_line = f"{link_text}: {link}" if data["truncated"] == "1" else link
+
         try:
-            link_line = ""
-            if link:
-                link_line = f"{link_text}: {link}" if data["truncated"] == "1" else link
+            # 尝试发送图文合并消息
             return self._create_message_chain(text_lines, link_line or None, image_url or None)
         except Exception as exc:  # pragma: no cover - 依赖运行环境
-            logger.error("build text MessageChain failed: %s", exc)
-            raise
+            logger.warning("build text message chain with image failed, fallback to text only: %s", exc)
+            # 降级为纯文本（不含图片）
+            try:
+                if link and not link_line:
+                    link_line = f"{link_text}: {link}"
+                return self._create_message_chain(
+                    text_lines + ([link_line] if link_line else []), None, None
+                )
+            except Exception as inner_exc:
+                logger.error("build text only chain also failed: %s", inner_exc)
+                # 最简保底
+                return self._create_message_chain([title or "RSS 推送"], None, None)
+
+    def _build_text_only_chain(self, item: dict[str, Any]):
+        """最简降级：只发送文本，不包含图片。用于图片渲染完全失败时。"""
+        data = self._build_render_data(item)
+        template = self._config.render_card_template
+
+        title = self._safe_format(template.title, data)
+        source = self._safe_format(template.source, data)
+        published_at = self._safe_format(template.published_at, data)
+        summary = self._safe_format(template.summary, data)
+        link_text = self._safe_format(template.link_text, data)
+        link = data["link"]
+
+        text_lines = [
+            line
+            for line in [
+                title,
+                f"来源：{source}" if source else "",
+                f"分类：{data['category']}" if data["category"] else "",
+                f"作者：{data['author']}" if data["author"] else "",
+                f"时间：{published_at}" if published_at else "",
+                summary,
+                f"{link_text}: {link}" if link else "",
+            ]
+            if line
+        ]
+
+        return self._create_message_chain(text_lines, None, None)
 
     def _build_card_html(self, item: dict[str, Any]) -> str:
         data = self._build_render_data(item)
@@ -381,6 +428,14 @@ class FeedDispatcher:
         if link:
             footer = f'<a class="link" href="{link}">{link_text}</a>'
 
+        meta_parts = [f"来源：{source}"]
+        if data["category"]:
+            meta_parts.append(f"分类：{data['category']}")
+        if data["author"]:
+            meta_parts.append(f"作者：{data['author']}")
+        meta_parts.append(f"时间：{published_at}")
+        meta_text = " · ".join(meta_parts)
+
         return (
             "<html><head><meta charset='utf-8' /><style>"
             "body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#f5f7fb;padding:16px;}"
@@ -390,22 +445,35 @@ class FeedDispatcher:
             ".summary{color:#1f2937;font-size:15px;line-height:1.7;white-space:pre-wrap;}"
             ".link{display:inline-block;margin-top:12px;color:#2563eb;text-decoration:none;font-weight:600;}"
             "</style></head><body>"
-            f"<div class='card'><div class='title'>{title}</div><div class='meta'>来源：{source} · 时间：{published_at}</div>"
+            f"<div class='card'><div class='title'>{title}</div><div class='meta'>{meta_text}</div>"
             f"<div class='summary'>{summary}</div>{footer}</div></body></html>"
         )
 
     async def _build_image_payload(self, item: dict[str, Any]) -> tuple[Any, bool]:
+        """构建图片模式的消息载荷。
+
+        Returns:
+            tuple: (payload, is_fallback_to_text)
+            - payload: 渲染后的消息对象
+            - is_fallback_to_text: 是否已降级为文本模式（此时原图已包含在 payload 中）
+        """
         html = self._build_card_html(item)
 
         try:
             image_result = await self.html_render(html)
-            # 卡片渲染成功时，主 payload 不包含 RSS 原图。
+            # 卡片渲染成功时，主 payload 是卡片图片
             return self._as_image_result_if_possible(item, image_result), False
         except Exception as exc:  # pragma: no cover - 依赖运行环境
             logger.warning("image render failed, fallback to text mode: %s", exc)
-            chain = self._build_text_message_chain(item)
-            # 文本链路已包含 image_url，避免后续重复追加原图。
-            return self._as_chain_result_if_possible(item, chain), True
+            # 降级到文本模式，图片会随文本一起发送
+            try:
+                chain = self._build_text_message_chain(item)
+                return self._as_chain_result_if_possible(item, chain), True
+            except Exception as inner_exc:
+                logger.error("text fallback also failed: %s", inner_exc)
+                # 最简降级：只发送文本，不包含图片
+                chain = self._build_text_only_chain(item)
+                return self._as_chain_result_if_possible(item, chain), True
 
     def _build_daily_digest_text_chain(self, digest: dict[str, Any]):
         title = str(digest.get("title", "")).strip() or "RSS 日报"
@@ -458,18 +526,19 @@ class FeedDispatcher:
         html = self._build_daily_digest_card_html(digest)
         return await self.html_render(html)
 
-    def _build_image_only_chain(self, image_url: str):
+    def _build_image_only_chain(self, image_url: str) -> Any | None:
+        """构建仅包含图片的消息链，失败时返回 None 而不是抛出异常。"""
+        if not image_url:
+            return None
+
         MessageChain = self._resolve_messagechain_cls()
         Image = self._resolve_image_cls()
 
         try:
             return MessageChain(chain=[Image.fromURL(image_url)])
-        except TypeError:
-            chain = MessageChain()
-            if hasattr(chain, "chain"):
-                chain.chain = [Image.fromURL(image_url)]
-                return chain
-            raise
+        except Exception as exc:
+            logger.warning("build image only chain failed for url=%s: %s", image_url, exc)
+            return None
 
     async def html_render(self, html: str):
         if hasattr(self.context, "html_render"):
@@ -496,6 +565,60 @@ class FeedDispatcher:
                 logger.warning("event.image_result failed, fallback to image_result: %s", exc)
         return image_result
 
+    @staticmethod
+    def _is_rich_media_error(exc: Exception) -> bool:
+        """检测是否为富媒体传输失败错误（QQ图片发送失败）。"""
+        text = str(exc or "").lower()
+        return any(marker in text for marker in ["rich media transfer failed", "ntevent", "sendmsg"])
+
+    async def _try_send_with_fallback(
+        self,
+        unified_msg_origin: str,
+        payload: Any,
+        item: dict,
+        fingerprint: str,
+        result: DispatchResult,
+    ) -> bool:
+        """尝试发送消息，富媒体失败时自动降级为纯文本重试。
+
+        Returns:
+            bool: 是否发送成功
+        """
+        try:
+            await self.context.send_message(unified_msg_origin, payload)
+            return True
+        except Exception as exc:
+            if not self._is_rich_media_error(exc):
+                # 不是富媒体错误，直接抛出让上层处理
+                raise
+
+            logger.warning(
+                "rich media send failed for origin=%s, retrying with text only: %s",
+                unified_msg_origin,
+                exc,
+            )
+
+            # 构建纯文本降级消息
+            try:
+                text_chain = self._build_text_only_chain(item)
+                text_payload = self._as_chain_result_if_possible(item, text_chain)
+                await self.context.send_message(unified_msg_origin, text_payload)
+                logger.info(
+                    "text-only fallback succeeded for origin=%s item=%s",
+                    unified_msg_origin,
+                    str(item.get("guid", "") or item.get("title", "")).strip()[:50],
+                )
+                # 标记为降级成功
+                result.transient_failure_count += 1  # 记录一次失败但最终成功
+                return True
+            except Exception as fallback_exc:
+                logger.error(
+                    "text-only fallback also failed for origin=%s: %s",
+                    unified_msg_origin,
+                    fallback_exc,
+                )
+                raise
+
     async def dispatch(self, item: dict) -> DispatchResult:
         origins = self._resolve_origins(item)
         if not origins:
@@ -507,11 +630,11 @@ class FeedDispatcher:
             payload, source_image_already_included = await self._build_image_payload(item)
             image_url = str(item.get("image_url", "") or "").strip()
             if image_url and not source_image_already_included:
-                try:
-                    image_chain = self._build_image_only_chain(image_url)
+                image_chain = self._build_image_only_chain(image_url)
+                if image_chain is not None:
                     extra_image_payload = self._as_chain_result_if_possible(item, image_chain)
-                except Exception as exc:
-                    logger.warning("build extra source image payload failed: %s", exc)
+                else:
+                    logger.info("skip invalid image_url in image mode: %s", image_url)
         else:
             try:
                 chain = self._build_text_message_chain(item)
@@ -535,10 +658,16 @@ class FeedDispatcher:
                 )
                 continue
             try:
-                await self.context.send_message(unified_msg_origin, payload)
-                result.success_count += 1
-                await self._confirm_dispatch(fingerprint)
-                if extra_image_payload is not None:
+                # 使用带降级的发送方法
+                sent_ok = await self._try_send_with_fallback(
+                    unified_msg_origin, payload, item, fingerprint, result
+                )
+                if sent_ok:
+                    result.success_count += 1
+                    await self._confirm_dispatch(fingerprint)
+
+                # 额外的原图发送（如果主消息成功）
+                if sent_ok and extra_image_payload is not None:
                     try:
                         await self.context.send_message(unified_msg_origin, extra_image_payload)
                     except Exception as exc:

@@ -60,6 +60,8 @@ class FeedParser:
             summary = self._text(item.find("description"))
             published = self._normalize_time(self._text(item.find("pubDate")))
             image_url = self._extract_rss_image_url(item, summary)
+            category = self._text(item.find("category"))
+            author = self._text(item.find("author"))
             item_id = guid or link or sha256(f"{title}|{published}".encode("utf-8")).hexdigest()
             result.append(
                 {
@@ -72,6 +74,8 @@ class FeedParser:
                     "published_at": published,
                     "source": feed_title,
                     "image_url": image_url,
+                    "category": category,
+                    "author": author,
                 }
             )
         return result
@@ -115,6 +119,18 @@ class FeedParser:
             if not image_url:
                 image_url = self._extract_image_from_html(summary)
 
+            # Atom Category: <category term="..."/>
+            category = ""
+            cat_node = entry.find(self._tag(ns, "category"))
+            if cat_node is not None:
+                category = (cat_node.attrib.get("term") or "").strip()
+
+            # Atom Author: <author><name>...</name></author>
+            author = ""
+            author_node = entry.find(self._tag(ns, "author"))
+            if author_node is not None:
+                author = self._text(author_node.find(self._tag(ns, "name")))
+
             item_id = id_text or link or sha256(f"{title}|{published}".encode("utf-8")).hexdigest()
             result.append(
                 {
@@ -127,6 +143,8 @@ class FeedParser:
                     "published_at": published,
                     "source": feed_title,
                     "image_url": image_url,
+                    "category": category,
+                    "author": author,
                 }
             )
         return result
@@ -185,7 +203,9 @@ class FeedParser:
     def _text(node) -> str:
         if node is None:
             return ""
-        return "".join(node.itertext()).strip()
+        raw = "".join(node.itertext()).strip()
+        # 还原 &amp; 等转义字符
+        return unescape(raw)
 
     @staticmethod
     def _normalize_time(raw: str) -> str:
