@@ -102,8 +102,30 @@ class FeedDispatcher:
             return time_text
         return datetime.now().strftime("%Y-%m-%d %H:%M")
 
+    @staticmethod
+    def _strip_html_tags(html_text: str) -> str:
+        """去除 HTML 标签，保留纯文本。"""
+        import re
+        # 先替换 <br>, <p> 等常见标签为换行
+        text = re.sub(r'<br\s*/?>', '\n', html_text, flags=re.IGNORECASE)
+        text = re.sub(r'</p>', '\n', text, flags=re.IGNORECASE)
+        text = re.sub(r'<p[^>]*>', '', text, flags=re.IGNORECASE)
+        # 移除所有其他 HTML 标签
+        text = re.sub(r'<[^>]+>', '', text)
+        # 解码 HTML 实体
+        from html import unescape
+        text = unescape(text)
+        # 合并多余空白
+        lines = [line.strip() for line in text.split('\n') if line.strip()]
+        return '\n'.join(lines)
+
     def _truncate_summary(self, item: dict[str, Any]) -> tuple[str, bool]:
-        summary = str(item.get("summary", "") or item.get("content", "")).strip()
+        raw_summary = str(item.get("summary", "") or item.get("content", "")).strip()
+        if not raw_summary:
+            return "", False
+
+        # 去除 HTML 标签
+        summary = self._strip_html_tags(raw_summary)
         if not summary:
             return "", False
 
