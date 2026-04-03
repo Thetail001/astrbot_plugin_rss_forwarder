@@ -227,7 +227,9 @@ class FeedDispatcher:
 
         try:
             return await asyncio.to_thread(self._hash_image_bytes_sync, normalized)
-        except (HTTPError, URLError, OSError, ValueError):
+        except Exception as exc:
+            # 捕获所有网络/IO错误，避免图片哈希失败影响主流程
+            logger.debug("image hash failed for %s: %s", normalized, exc)
             return ""
 
     def _hash_image_bytes_sync(self, image_url: str) -> str:
@@ -593,6 +595,22 @@ class FeedDispatcher:
         text = str(exc or "").lower()
         return any(marker in text for marker in ["rich media transfer failed", "ntevent", "sendmsg"])
 
+    @staticmethod
+    def _is_image_network_error(exc: Exception) -> bool:
+        """检测是否为图片下载/网络错误（可降级为纯文本）。"""
+        text = str(exc or "").lower()
+        network_markers = [
+            "cannot connect to host",
+            "connection timeout",
+            "temporary failure in name resolution",
+            "connection reset by peer",
+            "not enough data",
+            "contentlengtherror",
+            "ssl:",
+            "timeout",
+        ]
+        return any(marker in text for marker in network_markers)
+
     async def _try_send_with_fallback(
         self,
         unified_msg_origin: str,
@@ -610,12 +628,14 @@ class FeedDispatcher:
             await self.context.send_message(unified_msg_origin, payload)
             return True
         except Exception as exc:
-            if not self._is_rich_media_error(exc):
-                # 不是富媒体错误，直接抛出让上层处理
+            if not self._is_rich_media_error(exc) and not self._is_image_network_error(exc):
+                # 不是富媒体/图片网络错误，直接抛出让上层处理
                 raise
 
+            error_type = "image network" if self._is_image_network_error(exc) else "rich media"
             logger.warning(
-                "rich media send failed for origin=%s, retrying with text only: %s",
+                "%s send failed for origin=%s, retrying with text only: %s",
+                error_type,
                 unified_msg_origin,
                 exc,
             )
