@@ -331,11 +331,6 @@
       }
     }
   },
-  "dedup_ttl_seconds": {
-    "type": "int",
-    "default": 604800,
-    "description": "RSS 去重记录保留时间（秒），默认 7 天"
-  },
   "startup_delay_seconds": {
     "type": "int",
     "default": 45,

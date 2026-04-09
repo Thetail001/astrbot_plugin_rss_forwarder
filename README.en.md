@@ -21,7 +21,7 @@ This project is not meant to be a drop-in clone of [`Soulter/astrbot_plugin_rss`
 - Independent daily digest jobs via `daily_digests[]`.
 - Scheduled polling via `interval_seconds` (implemented) and `cron` field (reserved, currently fallback).
 - Startup-safe first poll delay: waits `45` seconds by default before the first poll after plugin startup.
-- Deduplication + feed cursor persistence (ETag / Last-Modified / last_success_time).
+- Permanent deduplication (once pushed, never pushed again) + feed cursor persistence (ETag / Last-Modified / last_success_time).
 - Admin commands: `/rss list`, `/rss status`, `/rss run [job_id]`, `/rss pause [job_id]`, `/rss resume [job_id]`, `/rss digest run [digest_id]`.
 - Three-stage translation chain: `LLM -> Google Translate -> GitHub Models`.
 - `text` / `image` rendering mode.
@@ -46,7 +46,7 @@ The plugin ships `_conf_schema.json`, so all major settings can be edited from A
 - `translation.llm_*`
 - `translation.google_translate_*`
 - `translation.github_models_*`
-- `dedup_ttl_seconds`, `startup_delay_seconds`, `render_mode`, `summary_max_chars`, `render_card_template`
+- `startup_delay_seconds`, `render_mode`, `summary_max_chars`, `render_card_template`
 
 Translation order in the UI matches runtime order: `LLM -> Google -> GitHub Models`.
 

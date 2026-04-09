@@ -62,7 +62,7 @@
 - 支持任务级路由：一个 Job 绑定多个 feed + 多个 target。
 - 支持定时执行：`interval_seconds`（已实现）与 `cron`（预留字段，当前回退到 interval）。
 - 支持启动首轮延迟：默认在插件启动后等待 `45` 秒再执行第一次轮询，避免平台适配器尚未就绪时抢跑。
-- 支持去重（KV + TTL）与 feed 状态（ETag/Last-Modified/last_success_time）。
+- 支持永久去重（推过的内容不再推送）与 feed 状态（ETag/Last-Modified/last_success_time）。
 - 支持管理指令：`/rss list`、`/rss status`、`/rss run [job_id]`、`/rss pause [job_id]`、`/rss resume [job_id]`、`/rss reset`（清空去重记录）。
 - 支持日报汇总：`daily_digests[]`、`/rss digest run [digest_id]`。
 - 支持三级翻译链路：LLM、Google Translate、GitHub Models。
@@ -129,7 +129,6 @@
   - `github_models_token_file`：GitHub token 文件路径，默认按 `data/github.token` 解析
   - `github_models_proxy_mode` / `github_models_proxy_url`：GitHub Models 独立代理
 - 其他
-  - `dedup_ttl_seconds`
   - `startup_delay_seconds`
   - `render_mode`（`text|image`）
   - `summary_max_chars`
