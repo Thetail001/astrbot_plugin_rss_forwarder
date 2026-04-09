@@ -22,7 +22,6 @@ class FeedStorage:
 
     FEED_STATE_PREFIX = "feed_state:"
     CONTENT_KEY_PREFIX = "content_seen:"
-    CONTENT_INDEX_KEY = "content_seen_index"
     DEDUP_VERSION_KEY = "content_seen_version"
     DISPATCH_GUARD_PREFIX = "dispatch_guard:"
     DAILY_DIGEST_RETENTION_SECONDS = 30 * 24 * 60 * 60
@@ -45,12 +44,12 @@ class FeedStorage:
         cache_root = Path(storage_dir) if storage_dir is not None else self.plugin_cache_dir()
         self._state_path = cache_root / "state.json"
         self._state_loaded = False
-        self._disk_state: dict[str, Any] = {"kv": {}}
+        self._disk_state: dict[str, Any] = {'kv': {}}
 
     async def get(self, key: str, default: Any = None) -> Any:
         """封装 KV 读取。"""
         await self._ensure_state_loaded()
-        kv_store = self._disk_state.setdefault("kv", {})
+        kv_store = self._disk_state.setdefault('kv', {})
         if key in kv_store:
             return kv_store[key]
 
@@ -65,7 +64,7 @@ class FeedStorage:
     async def put(self, key: str, value: Any) -> None:
         """封装 KV 写入。"""
         await self._ensure_state_loaded()
-        self._disk_state.setdefault("kv", {})[key] = value
+        self._disk_state.setdefault('kv', {})[key] = value
         self._flush_state()
 
         encoded = json.dumps(value, ensure_ascii=False)
@@ -77,7 +76,7 @@ class FeedStorage:
     async def delete(self, key: str) -> None:
         """封装 KV 删除。"""
         await self._ensure_state_loaded()
-        self._disk_state.setdefault("kv", {}).pop(key, None)
+        self._disk_state.setdefault('kv', {}).pop(key, None)
         self._flush_state()
 
         if self._delete_kv_data is None:
@@ -86,70 +85,110 @@ class FeedStorage:
         await self._delete_kv_data(key)
 
     async def has_seen(self, item_id: str) -> bool:
-        await self._get_dedup_version()
+        """检查条目是否已推送。
 
-        # NOTE:
-        # _seen_ids is only an in-memory acceleration set and does not carry TTL.
-        # We still need to validate persisted record expiration to avoid permanent
-        # false positives after long-running processes.
-        cached = item_id in self._seen_ids
+        去重记录永久有效，不会过期。定期清理通过 cleanup_old_records() 控制存储大小。
+        """
+        # 内存缓存加速
+        if item_id in self._seen_ids:
+            return True
+
+        # 检查持久化存储
         record = await self.get(self._content_key(item_id), default=None)
-        if not record:
-            record = await self._read_legacy_content_record(item_id)
-        if not record:
-            if cached:
-                self._seen_ids.discard(item_id)
-            return False
+        if record is not None:
+            self._seen_ids.add(item_id)
+            return True
 
-        expire_at = int(record.get("expire_at", 0))
-        if expire_at and expire_at < int(time.time()):
-            await self.delete(self._content_key(item_id))
-            self._seen_ids.discard(item_id)
-            return False
+        # 兼容旧版本数据（迁移后删除）
+        record = await self._read_legacy_content_record(item_id)
+        if record is not None:
+            # 迁移到新格式（永不过期）
+            await self.mark_seen(item_id)
+            return True
 
+        return False
+
+    async def mark_seen(self, item_id: str, ttl_seconds: int = 0) -> None:
+        """标记条目为已推送。
+
+        Args:
+            item_id: 条目唯一标识
+            ttl_seconds: 已废弃，保留参数用于向后兼容
+        """
         self._seen_ids.add(item_id)
-        return True
-
-    async def mark_seen(self, item_id: str, ttl_seconds: int = 86400) -> None:
-        await self._get_dedup_version()
-        self._seen_ids.add(item_id)
-        expire_at = int(time.time()) + max(ttl_seconds, 0)
         await self.put(
             self._content_key(item_id),
             {
                 "id": item_id,
-                "expire_at": expire_at,
-                "updated_at": int(time.time()),
+                "pushed_at": int(time.time()),
             },
         )
-        seen_index = await self.get(self.CONTENT_INDEX_KEY, default=[])
-        if not isinstance(seen_index, list):
-            seen_index = []
-        if item_id not in seen_index:
-            seen_index.append(item_id)
-            await self.put(self.CONTENT_INDEX_KEY, seen_index)
 
     async def clear_seen(self) -> int:
-        """清空已推送去重记录，返回删除数量。
-
-        说明：在 KV 不支持按前缀枚举键时，采用去重版本号自增实现“逻辑清空”，
-        旧版本键即使存在也不会再命中。
-        """
-        await self._get_dedup_version()
-        seen_index = await self.get(self.CONTENT_INDEX_KEY, default=[])
-        if not isinstance(seen_index, list):
-            seen_index = []
-
+        """Clear all seen records and return the number of deleted items."""
         deleted = 0
-        for item_id in seen_index:
-            await self.delete(self._content_key(str(item_id)))
+        keys_to_delete = []
+
+        # Collect keys from memory cache
+        for item_id in list(self._seen_ids):
+            keys_to_delete.append(self._content_key(item_id))
+
+        # Collect from disk state
+        await self._ensure_state_loaded()
+        kv_store = self._disk_state.get('kv', {})
+        for key in list(kv_store.keys()):
+            if key.startswith(self.CONTENT_KEY_PREFIX):
+                if key not in keys_to_delete:
+                    keys_to_delete.append(key)
+
+        # Execute deletion
+        for key in keys_to_delete:
+            await self.delete(key)
             deleted += 1
 
-        await self.delete(self.CONTENT_INDEX_KEY)
         self._seen_ids.clear()
-        version = await self._get_dedup_version()
-        self._dedup_version = version + 1
-        await self.put(self.DEDUP_VERSION_KEY, self._dedup_version)
+        return deleted
+
+    async def cleanup_old_records(self, max_records: int = 1000) -> int:
+        """清理旧的去重记录，只保留最近的 max_records 条。
+
+        Args:
+            max_records: 最大保留记录数，默认 1000
+
+        Returns:
+            删除的记录数量
+        """
+        await self._ensure_state_loaded()
+        kv_store = self._disk_state.get('kv', {})
+
+        # 收集所有去重记录及其推送时间
+        records: list[tuple[str, int]] = []
+        for key, value in kv_store.items():
+            if not key.startswith(self.CONTENT_KEY_PREFIX):
+                continue
+            if not isinstance(value, dict):
+                continue
+            pushed_at = value.get("pushed_at", 0)
+            records.append((key, pushed_at))
+
+        if len(records) <= max_records:
+            return 0
+
+        # 按时间排序，删除最旧的
+        records.sort(key=lambda x: x[1])
+        to_delete = records[:-max_records]
+
+        deleted = 0
+        for key, _ in to_delete:
+            await self.delete(key)
+            deleted += 1
+
+        # 同时清理内存缓存
+        for key, _ in to_delete:
+            # 从 key 提取 item_id
+            item_id = key[len(self.CONTENT_KEY_PREFIX):]
+            self._seen_ids.discard(item_id)
+
         return deleted
 
     async def archive_digest_items(
@@ -392,8 +431,8 @@ class FeedStorage:
                 if isinstance(loaded, dict):
                     self._disk_state = loaded
         except (OSError, json.JSONDecodeError):
-            self._disk_state = {"kv": {}}
-        self._disk_state.setdefault("kv", {})
+            self._disk_state = {'kv': {}}
+        self._disk_state.setdefault('kv', {})
 
     def _flush_state(self) -> None:
         self._write_disk_state(self._disk_state)
@@ -507,9 +546,8 @@ class FeedStorage:
         return f"{cls.FEED_STATE_PREFIX}{feed_id}"
 
     def _content_key(self, item_id: str) -> str:
-        # 仅依赖内存缓存；首次使用前由 _get_dedup_version 初始化。
-        version = self._dedup_version if self._dedup_version is not None else 0
-        return f"{self.CONTENT_KEY_PREFIX}v{version}:{item_id}"
+        """生成去重记录的存储键。"""
+        return f"{self.CONTENT_KEY_PREFIX}{item_id}"
 
     def _dispatch_guard_key(self, fingerprint: str) -> str:
         value = str(fingerprint or "").strip()
@@ -547,11 +585,11 @@ class FeedStorage:
                 with self._state_path.open("r", encoding="utf-8") as fp:
                     loaded = json.load(fp)
                 if isinstance(loaded, dict):
-                    loaded.setdefault("kv", {})
+                    loaded.setdefault('kv', {})
                     return loaded
         except (OSError, json.JSONDecodeError):
             pass
-        return {"kv": {}}
+        return {'kv': {}}
 
     def _with_state_lock(self, callback: Callable[[dict[str, Any], int], Any]) -> Any:
         lock_path = self._state_path.parent / "state.lock"
@@ -578,7 +616,7 @@ class FeedStorage:
         ttl_seconds: int = 0,
     ) -> bool | None:
         def callback(state: dict[str, Any], now: int):
-            kv = state.setdefault("kv", {})
+            kv = state.setdefault('kv', {})
             record = kv.get(key)
 
             if action == "claim":
