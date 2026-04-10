@@ -695,7 +695,6 @@ class RSSScheduler:
             skipped_seen_count = 0
             skipped_batch_duplicate_count = 0
             skipped_dispatch_duplicate_count = 0
-            skipped_history_count = 0
             skipped_invalid_target_count = 0
             dispatch_fail_count = 0
             error_summary = ""
@@ -731,10 +730,6 @@ class RSSScheduler:
                         skipped_seen_count += 1
                         continue
                     seen_in_run.update(seen_keys)
-                    if self._should_mark_history_only(item, feed_state_map, bootstrap_only=True):
-                        await self._mark_seen_all(seen_keys, ttl_seconds=self._config.dedup_ttl_seconds)
-                        skipped_history_count += 1
-                        continue
 
                     event_item = dict(item)
                     event_item.setdefault("job_id", job.id)
@@ -793,7 +788,7 @@ class RSSScheduler:
                 error_summary=error_summary,
             )
             logger.info(
-                "job=%s finished: fetched=%s parsed=%s pushed=%s skipped_seen=%s skipped_batch_duplicate=%s skipped_dispatch_duplicate=%s skipped_history=%s skipped_invalid_target=%s dispatch_fail=%s duration_ms=%s error=%s",
+                "job=%s finished: fetched=%s parsed=%s pushed=%s skipped_seen=%s skipped_batch_duplicate=%s skipped_dispatch_duplicate=%s skipped_invalid_target=%s dispatch_fail=%s duration_ms=%s error=%s",
                 job.id,
                 fetched_count,
                 parsed_count,
@@ -801,7 +796,6 @@ class RSSScheduler:
                 skipped_seen_count,
                 skipped_batch_duplicate_count,
                 skipped_dispatch_duplicate_count,
-                skipped_history_count,
                 skipped_invalid_target_count,
                 dispatch_fail_count,
                 duration_ms,

@@ -73,30 +73,6 @@ class RSSSchedulerTests(unittest.TestCase):
 
         self.assertEqual(config.startup_delay_seconds, 45)
 
-    def test_history_items_are_suppressed_when_older_than_last_success(self):
-        item = {
-            "feed_id": "feed-1",
-            "published_at": "2026-03-15T00:00:00+00:00",
-        }
-        feed_state_map = {"feed-1": {"last_success_time": 1773536400}}
-
-        self.assertTrue(RSSScheduler._should_mark_history_only(item, feed_state_map))
-
-    def test_newer_items_are_not_suppressed(self):
-        item = {
-            "feed_id": "feed-1",
-            "published_at": "2026-03-15T03:00:01+00:00",
-        }
-        feed_state_map = {"feed-1": {"last_success_time": 1773536400}}
-
-        self.assertFalse(RSSScheduler._should_mark_history_only(item, feed_state_map))
-
-    def test_items_without_timestamp_are_not_suppressed(self):
-        item = {"feed_id": "feed-1", "published_at": ""}
-        feed_state_map = {"feed-1": {"last_success_time": 1773536400}}
-
-        self.assertFalse(RSSScheduler._should_mark_history_only(item, feed_state_map))
-
 
 class SchedulerPermanentFailureTests(unittest.IsolatedAsyncioTestCase):
     async def test_permanent_target_failures_are_treated_as_seen(self):
